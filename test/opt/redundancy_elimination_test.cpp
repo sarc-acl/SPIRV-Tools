@@ -84,6 +84,34 @@ TEST_F(RedundancyEliminationTest, RemoveRedundantAdd) {
   SinglePassRunAndMatch<RedundancyEliminationPass>(text, false);
 }
 
+// Remove a redundant add with flipped arguments.
+TEST_F(RedundancyEliminationTest, RemoveRedundantAddFlipped) {
+  const std::string text = R"(
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %2 "main"
+               OpExecutionMode %2 OriginUpperLeft
+               OpSource GLSL 430
+          %3 = OpTypeVoid
+          %4 = OpTypeFunction %3
+          %5 = OpTypeFloat 32
+          %6 = OpTypePointer Function %5
+          %2 = OpFunction %3 None %4
+          %7 = OpLabel
+          %8 = OpVariable %6 Function
+          %9 = OpLoad %5 %8
+         %10 = OpFMul %5 %9 %9
+         %11 = OpFAdd %5 %9 %10
+; CHECK: OpFAdd
+; CHECK-NEXT: OpReturn
+         %12 = OpFAdd %5 %10 %9
+               OpReturn
+               OpFunctionEnd
+  )";
+  SinglePassRunAndMatch<RedundancyEliminationPass>(text, false);
+}
+
 // Remove a redundant add going through a multiple basic blocks.
 TEST_F(RedundancyEliminationTest, RemoveRedundantAddDiamond) {
   const std::string text = R"(
@@ -357,6 +385,93 @@ OpFunctionEnd
 )";
 
   SinglePassRunAndCheck<RedundancyEliminationPass>(text, text, false);
+}
+
+TEST_F(RedundancyEliminationTest, PreserveLoadYieldingImage) {
+  // This is more strict than needed.
+  // This is sufficient to ensure that the load of an image
+  // occurs in the same basic block as its use.
+  const std::string text = R"(
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main"
+               OpExecutionMode %main OriginLowerLeft
+               OpName %main "main"
+               OpName %load_ty "load_ty"
+               OpDecorate %var DescriptorSet 0
+               OpDecorate %var Binding 0
+       %void = OpTypeVoid
+          %6 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %load_ty = OpTypeImage %float 2D 0 0 0 2 Rgba32f
+%ptr_load_ty = OpTypePointer UniformConstant %load_ty
+        %var = OpVariable %ptr_load_ty UniformConstant
+       %main = OpFunction %void None %6
+       ; CHECK: OpLoad %load_ty
+       ; CHECK: OpLoad %load_ty
+         %15 = OpLabel
+         %16 = OpLoad %load_ty %var
+         %17 = OpLoad %load_ty %var
+               OpReturn
+               OpFunctionEnd
+  )";
+  SinglePassRunAndMatch<RedundancyEliminationPass>(text, false);
+}
+
+TEST_F(RedundancyEliminationTest, PreserveLoadYieldingSampler) {
+  const std::string text = R"(
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main"
+               OpExecutionMode %main OriginLowerLeft
+               OpName %main "main"
+               OpName %load_ty "load_ty"
+               OpDecorate %var DescriptorSet 0
+               OpDecorate %var Binding 0
+       %void = OpTypeVoid
+          %6 = OpTypeFunction %void
+    %load_ty = OpTypeSampler
+%ptr_load_ty = OpTypePointer UniformConstant %load_ty
+        %var = OpVariable %ptr_load_ty UniformConstant
+       %main = OpFunction %void None %6
+       ; CHECK: OpLoad %load_ty
+       ; CHECK: OpLoad %load_ty
+         %15 = OpLabel
+         %16 = OpLoad %load_ty %var
+         %17 = OpLoad %load_ty %var
+               OpReturn
+               OpFunctionEnd
+  )";
+  SinglePassRunAndMatch<RedundancyEliminationPass>(text, false);
+}
+
+TEST_F(RedundancyEliminationTest, PreserveLoadYieldingSampledImage) {
+  const std::string text = R"(
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main"
+               OpExecutionMode %main OriginLowerLeft
+               OpName %main "main"
+               OpName %load_ty "load_ty"
+               OpDecorate %var DescriptorSet 0
+               OpDecorate %var Binding 0
+       %void = OpTypeVoid
+          %6 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+       %i_ty = OpTypeImage %float 2D 0 0 0 2 Rgba32f
+    %load_ty = OpTypeSampledImage %i_ty
+%ptr_load_ty = OpTypePointer UniformConstant %load_ty
+        %var = OpVariable %ptr_load_ty UniformConstant
+       %main = OpFunction %void None %6
+       ; CHECK: OpLoad %load_ty
+       ; CHECK: OpLoad %load_ty
+         %15 = OpLabel
+         %16 = OpLoad %load_ty %var
+         %17 = OpLoad %load_ty %var
+               OpReturn
+               OpFunctionEnd
+  )";
+  SinglePassRunAndMatch<RedundancyEliminationPass>(text, false);
 }
 
 }  // namespace

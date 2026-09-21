@@ -47,6 +47,9 @@ Pass::Status UpgradeMemoryModel::Process() {
   UpgradeBarriers();
   UpgradeMemoryScope();
 
+  if (context()->id_overflow()) {
+    return Pass::Status::Failure;
+  }
   return Pass::Status::SuccessWithChange;
 }
 
@@ -160,14 +163,38 @@ void UpgradeMemoryModel::UpgradeMemoryAndImages() {
       }
 
       switch (inst->opcode()) {
-        case spv::Op::OpLoad:
+        case spv::Op::OpLoad: {
+          Instruction* src_pointer = context()->get_def_use_mgr()->GetDef(
+              inst->GetSingleWordInOperand(0u));
+          analysis::Type* src_type =
+              context()->get_type_mgr()->GetType(src_pointer->type_id());
+          auto storage_class = src_type->AsPointer()->storage_class();
+          if (storage_class == spv::StorageClass::Function ||
+              storage_class == spv::StorageClass::Private) {
+            // If the buffer from function variable or private variable, flag
+            // NonPrivatePointer is unnecessary.
+            is_coherent = false;
+          }
           UpgradeFlags(inst, 1u, is_coherent, is_volatile, kVisibility,
                        kMemory);
           break;
-        case spv::Op::OpStore:
+        }
+        case spv::Op::OpStore: {
+          Instruction* src_pointer = context()->get_def_use_mgr()->GetDef(
+              inst->GetSingleWordInOperand(0u));
+          analysis::Type* src_type =
+              context()->get_type_mgr()->GetType(src_pointer->type_id());
+          auto storage_class = src_type->AsPointer()->storage_class();
+          if (storage_class == spv::StorageClass::Function ||
+              storage_class == spv::StorageClass::Private) {
+            // If the buffer from function variable or private variable, flag
+            // NonPrivatePointer is unnecessary.
+            is_coherent = false;
+          }
           UpgradeFlags(inst, 2u, is_coherent, is_volatile, kAvailability,
                        kMemory);
           break;
+        }
         case spv::Op::OpCopyMemory:
         case spv::Op::OpCopyMemorySized:
           start_operand = inst->opcode() == spv::Op::OpCopyMemory ? 2u : 3u;
@@ -202,8 +229,10 @@ void UpgradeMemoryModel::UpgradeMemoryAndImages() {
       // |is_coherent| is never used for the same instructions as
       // |src_coherent| and |dst_coherent|.
       if (is_coherent) {
-        inst->AddOperand(
-            {SPV_OPERAND_TYPE_SCOPE_ID, {GetScopeConstant(scope)}});
+        uint32_t scope_id = GetScopeConstant(scope);
+        if (scope_id != 0) {
+          inst->AddOperand({SPV_OPERAND_TYPE_SCOPE_ID, {scope_id}});
+        }
       }
       if (get_module()->version() >= SPV_SPIRV_VERSION_WORD(1, 4)) {
         // There are two memory access operands. The first is for the target and
@@ -221,8 +250,10 @@ void UpgradeMemoryModel::UpgradeMemoryAndImages() {
           }
           // Add the target scope if necessary.
           if (dst_coherent) {
-            new_operands.push_back(
-                {SPV_OPERAND_TYPE_SCOPE_ID, {GetScopeConstant(dst_scope)}});
+            uint32_t scope_id = GetScopeConstant(dst_scope);
+            if (scope_id != 0) {
+              new_operands.push_back({SPV_OPERAND_TYPE_SCOPE_ID, {scope_id}});
+            }
           }
           // Copy the remaining current operands.
           for (uint32_t i = start_operand + num_access_words;
@@ -231,8 +262,10 @@ void UpgradeMemoryModel::UpgradeMemoryAndImages() {
           }
           // Add the source scope if necessary.
           if (src_coherent) {
-            new_operands.push_back(
-                {SPV_OPERAND_TYPE_SCOPE_ID, {GetScopeConstant(src_scope)}});
+            uint32_t scope_id = GetScopeConstant(src_scope);
+            if (scope_id != 0) {
+              new_operands.push_back({SPV_OPERAND_TYPE_SCOPE_ID, {scope_id}});
+            }
           }
           inst->SetInOperands(std::move(new_operands));
         }
@@ -241,12 +274,16 @@ void UpgradeMemoryModel::UpgradeMemoryAndImages() {
         // visible flags are used the first scope operand is for availability
         // (writes) and the second is for visibility (reads).
         if (dst_coherent) {
-          inst->AddOperand(
-              {SPV_OPERAND_TYPE_SCOPE_ID, {GetScopeConstant(dst_scope)}});
+          uint32_t scope_id = GetScopeConstant(dst_scope);
+          if (scope_id != 0) {
+            inst->AddOperand({SPV_OPERAND_TYPE_SCOPE_ID, {scope_id}});
+          }
         }
         if (src_coherent) {
-          inst->AddOperand(
-              {SPV_OPERAND_TYPE_SCOPE_ID, {GetScopeConstant(src_scope)}});
+          uint32_t scope_id = GetScopeConstant(src_scope);
+          if (scope_id != 0) {
+            inst->AddOperand({SPV_OPERAND_TYPE_SCOPE_ID, {scope_id}});
+          }
         }
       }
     });
@@ -292,8 +329,14 @@ void UpgradeMemoryModel::UpgradeSemantics(Instruction* inst,
 
   value |= uint32_t(spv::MemorySemanticsMask::Volatile);
   auto new_constant = context()->get_constant_mgr()->GetConstant(type, {value});
+  if (!new_constant) {
+    return;
+  }
   auto new_semantics =
       context()->get_constant_mgr()->GetDefiningInstruction(new_constant);
+  if (!new_semantics) {
+    return;
+  }
   inst->SetInOperand(in_operand, {new_semantics->result_id()});
 }
 
@@ -366,6 +409,21 @@ std::pair<bool, bool> UpgradeMemoryModel::TraceInstruction(
         indices.push_back(inst->GetSingleWordInOperand(i));
       }
       break;
+    case spv::Op::OpLoad:
+      if (context()->get_type_mgr()->GetType(inst->type_id())->AsPointer()) {
+        analysis::Integer int_ty(32, false);
+        uint32_t int_id =
+            context()->get_type_mgr()->GetTypeInstruction(&int_ty);
+        const analysis::Constant* constant =
+            context()->get_constant_mgr()->GetConstant(
+                context()->get_type_mgr()->GetType(int_id), {0u});
+        uint32_t constant_id = context()
+                                   ->get_constant_mgr()
+                                   ->GetDefiningInstruction(constant)
+                                   ->result_id();
+
+        indices.push_back(constant_id);
+      }
     default:
       break;
   }
@@ -574,14 +632,22 @@ void UpgradeMemoryModel::UpgradeFlags(Instruction* inst, uint32_t in_operand,
 uint32_t UpgradeMemoryModel::GetScopeConstant(spv::Scope scope) {
   analysis::Integer int_ty(32, false);
   uint32_t int_id = context()->get_type_mgr()->GetTypeInstruction(&int_ty);
+  if (int_id == 0) {
+    return 0;
+  }
   const analysis::Constant* constant =
       context()->get_constant_mgr()->GetConstant(
           context()->get_type_mgr()->GetType(int_id),
           {static_cast<uint32_t>(scope)});
-  return context()
-      ->get_constant_mgr()
-      ->GetDefiningInstruction(constant)
-      ->result_id();
+  if (!constant) {
+    return 0;
+  }
+  Instruction* inst =
+      context()->get_constant_mgr()->GetDefiningInstruction(constant);
+  if (!inst) {
+    return 0;
+  }
+  return inst->result_id();
 }
 
 void UpgradeMemoryModel::CleanupDecorations() {
@@ -661,22 +727,33 @@ void UpgradeMemoryModel::UpgradeBarriers() {
       roots.push(e.GetSingleWordInOperand(1u));
       if (context()->ProcessCallTreeFromRoots(CollectBarriers, &roots)) {
         for (auto barrier : barriers) {
-          // Add OutputMemoryKHR to the semantics of the barriers.
+          // Add OutputMemoryKHR to the semantics of the non-relaxed barriers.
           uint32_t semantics_id = barrier->GetSingleWordInOperand(2u);
           Instruction* semantics_inst =
               context()->get_def_use_mgr()->GetDef(semantics_id);
           analysis::Type* semantics_type =
               context()->get_type_mgr()->GetType(semantics_inst->type_id());
           uint64_t semantics_value = GetIndexValue(semantics_inst);
-          const analysis::Constant* constant =
-              context()->get_constant_mgr()->GetConstant(
-                  semantics_type,
-                  {static_cast<uint32_t>(semantics_value) |
-                   uint32_t(spv::MemorySemanticsMask::OutputMemoryKHR)});
-          barrier->SetInOperand(2u, {context()
-                                         ->get_constant_mgr()
-                                         ->GetDefiningInstruction(constant)
-                                         ->result_id()});
+          const uint64_t memory_order_mask =
+              uint64_t(spv::MemorySemanticsMask::Acquire |
+                       spv::MemorySemanticsMask::Release |
+                       spv::MemorySemanticsMask::AcquireRelease |
+                       spv::MemorySemanticsMask::SequentiallyConsistent);
+          if (semantics_value & memory_order_mask) {
+            const analysis::Constant* constant =
+                context()->get_constant_mgr()->GetConstant(
+                    semantics_type,
+                    {static_cast<uint32_t>(semantics_value) |
+                     uint32_t(spv::MemorySemanticsMask::OutputMemoryKHR)});
+            if (constant) {
+              Instruction* const_inst =
+                  context()->get_constant_mgr()->GetDefiningInstruction(
+                      constant);
+              if (const_inst) {
+                barrier->SetInOperand(2u, {const_inst->result_id()});
+              }
+            }
+          }
         }
       }
       barriers.clear();
@@ -692,15 +769,24 @@ void UpgradeMemoryModel::UpgradeMemoryScope() {
     // * Workgroup ops (e.g. async_copy) have at most workgroup scope.
     if (spvOpcodeIsAtomicOp(inst->opcode())) {
       if (IsDeviceScope(inst->GetSingleWordInOperand(1))) {
-        inst->SetInOperand(1, {GetScopeConstant(spv::Scope::QueueFamilyKHR)});
+        uint32_t scope_id = GetScopeConstant(spv::Scope::QueueFamilyKHR);
+        if (scope_id != 0) {
+          inst->SetInOperand(1, {scope_id});
+        }
       }
     } else if (inst->opcode() == spv::Op::OpControlBarrier) {
       if (IsDeviceScope(inst->GetSingleWordInOperand(1))) {
-        inst->SetInOperand(1, {GetScopeConstant(spv::Scope::QueueFamilyKHR)});
+        uint32_t scope_id = GetScopeConstant(spv::Scope::QueueFamilyKHR);
+        if (scope_id != 0) {
+          inst->SetInOperand(1, {scope_id});
+        }
       }
     } else if (inst->opcode() == spv::Op::OpMemoryBarrier) {
       if (IsDeviceScope(inst->GetSingleWordInOperand(0))) {
-        inst->SetInOperand(0, {GetScopeConstant(spv::Scope::QueueFamilyKHR)});
+        uint32_t scope_id = GetScopeConstant(spv::Scope::QueueFamilyKHR);
+        if (scope_id != 0) {
+          inst->SetInOperand(0, {scope_id});
+        }
       }
     }
   });
@@ -743,6 +829,9 @@ void UpgradeMemoryModel::UpgradeExtInst(Instruction* ext_inst) {
   analysis::Struct struct_type(element_types);
   uint32_t struct_id =
       context()->get_type_mgr()->GetTypeInstruction(&struct_type);
+  if (struct_id == 0) {
+    return;
+  }
   // Change the operation
   GLSLstd450 new_op = is_modf ? GLSLstd450ModfStruct : GLSLstd450FrexpStruct;
   ext_inst->SetOperand(3u, {static_cast<uint32_t>(new_op)});
@@ -760,11 +849,17 @@ void UpgradeMemoryModel::UpgradeExtInst(Instruction* ext_inst) {
       IRContext::kAnalysisDefUse | IRContext::kAnalysisInstrToBlockMapping);
   auto extract_0 =
       builder.AddCompositeExtract(element_type_id, ext_inst->result_id(), {0});
+  if (!extract_0) {
+    return;
+  }
   context()->ReplaceAllUsesWith(ext_inst->result_id(), extract_0->result_id());
   // The extract's input was just changed to itself, so fix that.
   extract_0->SetInOperand(0u, {ext_inst->result_id()});
   auto extract_1 =
       builder.AddCompositeExtract(pointee_type_id, ext_inst->result_id(), {1});
+  if (!extract_1) {
+    return;
+  }
   builder.AddStore(ptr_id, extract_1->result_id());
 }
 

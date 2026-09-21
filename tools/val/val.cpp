@@ -15,6 +15,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <vector>
 
@@ -27,12 +28,15 @@
 void print_usage(char* argv0) {
   std::string target_env_list = spvTargetEnvList(36, 105);
   printf(
-      R"(%s - Validate a SPIR-V binary file.
+      R"(%s - Validate a SPIR-V binary file(s).
 
-USAGE: %s [options] [<filename>]
+USAGE: %s [options] [<path>]
 
-The SPIR-V binary is read from <filename>. If no file is specified,
-or if the filename is "-", then the binary is read from standard input.
+The SPIR-V binary is read from <path>. If no path is specified,
+or if the path is "-", then the binary is read from standard input.
+The <path> parameter may also specify a directory; in this case,
+the tool will recursively process all regular files with the .spv
+extension within that directory.
 
 NOTE: The validator is a work in progress.
 
@@ -66,13 +70,68 @@ Options:
                                    members.
   --allow-localsizeid              Allow use of the LocalSizeId decoration where it would otherwise not
                                    be allowed by the target environment.
+  --allow-offset-texture-operand   Allow use of the Offset texture operands where it would otherwise not
+                                   be allowed by the target environment.
+  --allow-vulkan-32-bit-bitwise    Allow use of non-32 bit for the Base operand where it would otherwise
+                                   not be allowed by the target environment.
   --before-hlsl-legalization       Allows code patterns that are intended to be
                                    fixed by spirv-opt's legalization passes.
+  --buffer-descriptor-layout       <size>:<align> Set size and alignment for buffer and acceleration structure descriptor heap resources.
+  --image-descriptor-layout        <size>:<align> Set size and alignment for image and sampled image descriptor heap resources.
+  --sampler-descriptor-layout      <size>:<align> Set size and alignment for sampler descriptor heap resources.
+  --tensor-descriptor-layout       <size>:<align> Set size and alignment for tensor descriptor heap resources.
   --version                        Display validator version information.
   --target-env                     {%s}
                                    Use validation rules from the specified environment.
 )",
       argv0, argv0, target_env_list.c_str());
+}
+
+bool process_single_file(const char* filename, spv_target_env& target_env,
+                         spvtools::ValidatorOptions& options,
+                         bool use_default_msg_consumer) {
+  std::vector<uint32_t> contents;
+  if (!ReadBinaryFile(filename, &contents)) return false;
+
+  spvtools::SpirvTools tools(target_env);
+
+  // Use a lambda expression here so filename can be captured. Messages use a
+  // fairly standard notation of `filename:line`.
+  auto CLIMessageConsumerWithFilename =
+      [filename](spv_message_level_t level, const char*,
+                 const spv_position_t& position, const char* message) {
+        const char* pretty_filename = filename;
+        if (!filename || 0 == strcmp(filename, "-")) {
+          pretty_filename = "stdin";
+        }
+
+        switch (level) {
+          case SPV_MSG_FATAL:
+          case SPV_MSG_INTERNAL_ERROR:
+          case SPV_MSG_ERROR:
+            std::cerr << "error: " << pretty_filename << ":" << position.index
+                      << ": " << message << std::endl;
+            break;
+          case SPV_MSG_WARNING:
+            std::cout << "warning: " << pretty_filename << ":" << position.index
+                      << ": " << message << std::endl;
+            break;
+          case SPV_MSG_INFO:
+            std::cout << "info: " << pretty_filename << ":" << position.index
+                      << ": " << message << std::endl;
+            break;
+          default:
+            break;
+        }
+      };
+
+  if (use_default_msg_consumer) {
+    tools.SetMessageConsumer(spvtools::utils::CLIMessageConsumer);
+  } else {
+    tools.SetMessageConsumer(CLIMessageConsumerWithFilename);
+  }
+
+  return tools.Validate(contents.data(), contents.size(), options);
 }
 
 int main(int argc, char** argv) {
@@ -111,7 +170,7 @@ int main(int argc, char** argv) {
         printf("%s\n", spvSoftwareVersionDetailsString());
         printf(
             "Targets:\n  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n  %s\n  "
-            "%s\n  %s\n  %s\n  %s\n",
+            "%s\n  %s\n  %s\n  %s %s\n",
             spvTargetEnvDescription(SPV_ENV_UNIVERSAL_1_0),
             spvTargetEnvDescription(SPV_ENV_UNIVERSAL_1_1),
             spvTargetEnvDescription(SPV_ENV_UNIVERSAL_1_2),
@@ -124,7 +183,8 @@ int main(int argc, char** argv) {
             spvTargetEnvDescription(SPV_ENV_VULKAN_1_1),
             spvTargetEnvDescription(SPV_ENV_VULKAN_1_1_SPIRV_1_4),
             spvTargetEnvDescription(SPV_ENV_VULKAN_1_2),
-            spvTargetEnvDescription(SPV_ENV_VULKAN_1_3));
+            spvTargetEnvDescription(SPV_ENV_VULKAN_1_3),
+            spvTargetEnvDescription(SPV_ENV_VULKAN_1_4));
         continue_processing = false;
         return_code = 0;
       } else if (0 == strcmp(cur_arg, "--help") || 0 == strcmp(cur_arg, "-h")) {
@@ -160,8 +220,88 @@ int main(int argc, char** argv) {
         options.SetSkipBlockLayout(true);
       } else if (0 == strcmp(cur_arg, "--allow-localsizeid")) {
         options.SetAllowLocalSizeId(true);
+      } else if (0 == strcmp(cur_arg, "--allow-offset-texture-operand")) {
+        options.SetAllowOffsetTextureOperand(true);
+      } else if (0 == strcmp(cur_arg, "--allow-vulkan-32-bit-bitwise")) {
+        options.SetAllowVulkan32BitBitwise(true);
       } else if (0 == strcmp(cur_arg, "--relax-struct-store")) {
         options.SetRelaxStructStore(true);
+      } else if (0 == strcmp(cur_arg, "--buffer-descriptor-layout")) {
+        if (argi + 1 < argc) {
+          uint32_t size = 0, alignment = 0;
+          if (sscanf(argv[++argi], "%u:%u", &size, &alignment) == 2 &&
+              size > 0 && alignment > 0) {
+            options.SetBufferDescriptorLayout(size, alignment);
+          } else {
+            fprintf(stderr,
+                    "error: Invalid argument to --buffer-descriptor-layout "
+                    "(expected <size>:<align>)\n");
+            continue_processing = false;
+            return_code = 1;
+          }
+        } else {
+          fprintf(stderr,
+                  "error: Missing argument to --buffer-descriptor-layout\n");
+          continue_processing = false;
+          return_code = 1;
+        }
+      } else if (0 == strcmp(cur_arg, "--image-descriptor-layout")) {
+        if (argi + 1 < argc) {
+          uint32_t size = 0, alignment = 0;
+          if (sscanf(argv[++argi], "%u:%u", &size, &alignment) == 2 &&
+              size > 0 && alignment > 0) {
+            options.SetImageDescriptorLayout(size, alignment);
+          } else {
+            fprintf(stderr,
+                    "error: Invalid argument to --image-descriptor-layout "
+                    "(expected <size>:<align>)\n");
+            continue_processing = false;
+            return_code = 1;
+          }
+        } else {
+          fprintf(stderr,
+                  "error: Missing argument to --image-descriptor-layout\n");
+          continue_processing = false;
+          return_code = 1;
+        }
+      } else if (0 == strcmp(cur_arg, "--sampler-descriptor-layout")) {
+        if (argi + 1 < argc) {
+          uint32_t size = 0, alignment = 0;
+          if (sscanf(argv[++argi], "%u:%u", &size, &alignment) == 2 &&
+              size > 0 && alignment > 0) {
+            options.SetSamplerDescriptorLayout(size, alignment);
+          } else {
+            fprintf(stderr,
+                    "error: Invalid argument to --sampler-descriptor-layout "
+                    "(expected <size>:<align>)\n");
+            continue_processing = false;
+            return_code = 1;
+          }
+        } else {
+          fprintf(stderr,
+                  "error: Missing argument to --sampler-descriptor-layout\n");
+          continue_processing = false;
+          return_code = 1;
+        }
+      } else if (0 == strcmp(cur_arg, "--tensor-descriptor-layout")) {
+        if (argi + 1 < argc) {
+          uint32_t size = 0, alignment = 0;
+          if (sscanf(argv[++argi], "%u:%u", &size, &alignment) == 2 &&
+              size > 0 && alignment > 0) {
+            options.SetTensorDescriptorLayout(size, alignment);
+          } else {
+            fprintf(stderr,
+                    "error: Invalid argument to --tensor-descriptor-layout "
+                    "(expected <size>:<align>)\n");
+            continue_processing = false;
+            return_code = 1;
+          }
+        } else {
+          fprintf(stderr,
+                  "error: Missing argument to --tensor-descriptor-layout\n");
+          continue_processing = false;
+          return_code = 1;
+        }
       } else if (0 == cur_arg[1]) {
         // Setting a filename of "-" to indicate stdin.
         if (!inFile) {
@@ -192,13 +332,35 @@ int main(int argc, char** argv) {
     return return_code;
   }
 
-  std::vector<uint32_t> contents;
-  if (!ReadBinaryFile(inFile, &contents)) return 1;
+  if (inFile &&
+      std::filesystem::is_directory(std::filesystem::status(inFile))) {
+    const std::filesystem::path dir(inFile);
+    bool succeed = true;
+    for (auto const& entry :
+         std::filesystem::recursive_directory_iterator(dir)) {
+      if (!entry.is_regular_file()) {
+        continue;
+      }
 
-  spvtools::SpirvTools tools(target_env);
-  tools.SetMessageConsumer(spvtools::utils::CLIMessageConsumer);
+      std::filesystem::path filepath = entry.path();
 
-  bool succeed = tools.Validate(contents.data(), contents.size(), options);
+      if (filepath.extension() != ".spv") continue;
 
-  return !succeed;
+      // Copy the string, because in C++20 the result type of
+      // std::filesystem::path::u8string changes type from std::string to
+      // std::u8string, and the pointer type ends up incompatible. Normalize
+      // to std::string first via copying.
+      const auto filepath_u8str = filepath.u8string();
+      const std::string filepath_str(filepath_u8str.begin(),
+                                     filepath_u8str.end());
+      if (!process_single_file(filepath_str.c_str(), target_env, options,
+                               false)) {
+        succeed = false;
+      }
+    }
+
+    return !succeed;
+  }
+
+  return !process_single_file(inFile, target_env, options, true);
 }

@@ -767,8 +767,6 @@ void main(float in_var_color : COLOR) {
         %101 = OpExtInst %void %1 DebugScope %22
                OpLine %5 13 7
                OpStore %100 %31
-               OpNoLine
-        %102 = OpExtInst %void %1 DebugNoScope
          %36 = OpExtInst %void %1 DebugDeclare %25 %100 %13
                OpReturn
                OpFunctionEnd
@@ -875,6 +873,44 @@ TEST(DebugInfoManager, ConvertGlobalToLocal) {
   // The flags operand should have shifted because operand 8 and 9 in the global
   // instruction are not relevant.
   EXPECT_EQ(dbg_var->GetInOperand(8), originalOperands[10]);
+}
+
+TEST(DebugInfoManagerTest, DebugInstructionWithForwardRefsKHR) {
+  const std::string text = R"(
+               OpCapability Shader
+               OpExtension "SPV_KHR_non_semantic_info"
+               OpExtension "SPV_KHR_relaxed_extended_instruction"
+          %1 = OpExtInstImport "NonSemantic.Shader.DebugInfo.100"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main"
+               OpExecutionMode %main OriginUpperLeft
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %uint_0 = OpConstant %uint 0
+     %uint_3 = OpConstant %uint 3
+         %10 = OpExtInstWithForwardRefsKHR %void %1 DebugTypeFunction %uint_3 %11
+         %11 = OpExtInst %void %1 DebugInfoNone
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+               OpReturn
+               OpFunctionEnd
+  )";
+
+  std::unique_ptr<IRContext> context =
+      BuildModule(SPV_ENV_UNIVERSAL_1_1, nullptr, text,
+                  SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+  ASSERT_NE(nullptr, context);
+
+  Instruction* forward_ref_inst = context->get_def_use_mgr()->GetDef(10);
+  ASSERT_NE(nullptr, forward_ref_inst);
+  EXPECT_EQ(forward_ref_inst->opcode(), spv::Op::OpExtInstWithForwardRefsKHR);
+
+  EXPECT_EQ(forward_ref_inst->GetShaderDebugOpcode(),
+            NonSemanticShaderDebugInfoDebugTypeFunction);
+
+  EXPECT_EQ(forward_ref_inst->GetCommonDebugOpcode(),
+            CommonDebugInfoDebugTypeFunction);
 }
 
 }  // namespace

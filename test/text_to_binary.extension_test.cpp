@@ -31,12 +31,12 @@ namespace {
 
 using spvtest::Concatenate;
 using spvtest::MakeInstruction;
-using utils::MakeVector;
 using spvtest::TextToBinaryTest;
 using ::testing::Combine;
 using ::testing::Eq;
 using ::testing::Values;
 using ::testing::ValuesIn;
+using utils::MakeVector;
 
 // Returns a generator of common Vulkan environment values to be tested.
 std::vector<spv_target_env> CommonVulkanEnvs() {
@@ -70,9 +70,15 @@ TEST_F(TextToBinaryTest, MultiImport) {
               Eq("Import Id is being defined a second time"));
 }
 
-TEST_F(TextToBinaryTest, TooManyArguments) {
+TEST_F(TextToBinaryTest, TooManyArgumentsIdEqualQuote) {
   const std::string input = R"(%opencl = OpExtInstImport "OpenCL.std"
-                               %2 = OpExtInst %float %opencl cos %x %oops")";
+                               %2 = OpExtInst %float %opencl cos %x %oops=")";
+  EXPECT_THAT(CompileFailure(input), Eq("Expected '=', found end of stream."));
+}
+
+TEST_F(TextToBinaryTest, TooManyArgumentsIdEqual) {
+  const std::string input = R"(%opencl = OpExtInstImport "OpenCL.std"
+                               %2 = OpExtInst %float %opencl cos %x %oops=)";
   EXPECT_THAT(CompileFailure(input), Eq("Expected '=', found end of stream."));
 }
 
@@ -852,41 +858,42 @@ INSTANTIATE_TEST_SUITE_P(
             {"OpExtension \"SPV_NV_shader_subgroup_partitioned\"\n",
              MakeInstruction(spv::Op::OpExtension,
                              MakeVector("SPV_NV_shader_subgroup_partitioned"))},
-            {"OpCapability GroupNonUniformPartitionedNV\n",
+            {"OpCapability GroupNonUniformPartitionedEXT\n",
              MakeInstruction(
                  spv::Op::OpCapability,
-                 {(uint32_t)spv::Capability::GroupNonUniformPartitionedNV})},
+                 {(uint32_t)spv::Capability::GroupNonUniformPartitionedEXT})},
             // Check the new capability's token number
-            {"OpCapability GroupNonUniformPartitionedNV\n",
+            {"OpCapability GroupNonUniformPartitionedEXT\n",
              MakeInstruction(spv::Op::OpCapability, {5297})},
-            {"%2 = OpGroupNonUniformPartitionNV %1 %3\n",
-             MakeInstruction(spv::Op::OpGroupNonUniformPartitionNV, {1, 2, 3})},
+            {"%2 = OpGroupNonUniformPartitionEXT %1 %3\n",
+             MakeInstruction(spv::Op::OpGroupNonUniformPartitionEXT,
+                             {1, 2, 3})},
             // Check the new instruction's token number
-            {"%2 = OpGroupNonUniformPartitionNV %1 %3\n",
+            {"%2 = OpGroupNonUniformPartitionEXT %1 %3\n",
              MakeInstruction(static_cast<spv::Op>(5296), {1, 2, 3})},
             // Check the new group operations
-            {"%2 = OpGroupIAdd %1 %3 PartitionedReduceNV %4\n",
+            {"%2 = OpGroupIAdd %1 %3 PartitionedReduceEXT %4\n",
              MakeInstruction(
                  spv::Op::OpGroupIAdd,
-                 {1, 2, 3, (uint32_t)spv::GroupOperation::PartitionedReduceNV,
+                 {1, 2, 3, (uint32_t)spv::GroupOperation::PartitionedReduceEXT,
                   4})},
-            {"%2 = OpGroupIAdd %1 %3 PartitionedReduceNV %4\n",
+            {"%2 = OpGroupIAdd %1 %3 PartitionedReduceEXT %4\n",
              MakeInstruction(spv::Op::OpGroupIAdd, {1, 2, 3, 6, 4})},
-            {"%2 = OpGroupIAdd %1 %3 PartitionedInclusiveScanNV %4\n",
+            {"%2 = OpGroupIAdd %1 %3 PartitionedInclusiveScanEXT %4\n",
              MakeInstruction(
                  spv::Op::OpGroupIAdd,
                  {1, 2, 3,
                   (uint32_t)spv::GroupOperation::PartitionedInclusiveScanNV,
                   4})},
-            {"%2 = OpGroupIAdd %1 %3 PartitionedInclusiveScanNV %4\n",
+            {"%2 = OpGroupIAdd %1 %3 PartitionedInclusiveScanEXT %4\n",
              MakeInstruction(spv::Op::OpGroupIAdd, {1, 2, 3, 7, 4})},
-            {"%2 = OpGroupIAdd %1 %3 PartitionedExclusiveScanNV %4\n",
+            {"%2 = OpGroupIAdd %1 %3 PartitionedExclusiveScanEXT %4\n",
              MakeInstruction(
                  spv::Op::OpGroupIAdd,
                  {1, 2, 3,
-                  (uint32_t)spv::GroupOperation::PartitionedExclusiveScanNV,
+                  (uint32_t)spv::GroupOperation::PartitionedExclusiveScanEXT,
                   4})},
-            {"%2 = OpGroupIAdd %1 %3 PartitionedExclusiveScanNV %4\n",
+            {"%2 = OpGroupIAdd %1 %3 PartitionedExclusiveScanEXT %4\n",
              MakeInstruction(spv::Op::OpGroupIAdd, {1, 2, 3, 8, 4})},
         })));
 
@@ -1374,6 +1381,376 @@ INSTANTIATE_TEST_SUITE_P(
             {"%2 = OpUntypedInBoundsPtrAccessChainKHR %1 %3 %4 %5 %6 %7\n",
              MakeInstruction(spv::Op::OpUntypedInBoundsPtrAccessChainKHR,
                              {1, 2, 3, 4, 5, 6, 7})},
+        })));
+
+// SPV_ARM_tensors
+INSTANTIATE_TEST_SUITE_P(
+    SPV_ARM_tensors, ExtensionRoundTripTest,
+    Combine(
+        Values(SPV_ENV_UNIVERSAL_1_0, SPV_ENV_UNIVERSAL_1_6, SPV_ENV_VULKAN_1_0,
+               SPV_ENV_VULKAN_1_1, SPV_ENV_VULKAN_1_2, SPV_ENV_VULKAN_1_3,
+               SPV_ENV_OPENCL_2_1),
+        ValuesIn(std::vector<AssemblyCase>{
+            {"OpExtension \"SPV_ARM_tensors\"\n",
+             MakeInstruction(spv::Op::OpExtension,
+                             MakeVector("SPV_ARM_tensors"))},
+            {"OpCapability TensorsARM\n",
+             MakeInstruction(spv::Op::OpCapability,
+                             {(uint32_t)spv::Capability::TensorsARM})},
+            {"OpCapability StorageTensorArrayDynamicIndexingARM\n",
+             MakeInstruction(
+                 spv::Op::OpCapability,
+                 {(uint32_t)
+                      spv::Capability::StorageTensorArrayDynamicIndexingARM})},
+            {"OpCapability StorageTensorArrayNonUniformIndexingARM\n",
+             MakeInstruction(spv::Op::OpCapability,
+                             {(uint32_t)spv::Capability::
+                                  StorageTensorArrayNonUniformIndexingARM})},
+            {"%1 = OpTypeTensorARM %2\n",
+             MakeInstruction(spv::Op::OpTypeTensorARM, {1, 2})},
+            {"%1 = OpTypeTensorARM %2 %3\n",
+             MakeInstruction(spv::Op::OpTypeTensorARM, {1, 2, 3})},
+            {"%1 = OpTypeTensorARM %2 %3 %4\n",
+             MakeInstruction(spv::Op::OpTypeTensorARM, {1, 2, 3, 4})},
+            {"%2 = OpTensorReadARM %1 %3 %4\n",
+             MakeInstruction(spv::Op::OpTensorReadARM, {1, 2, 3, 4})},
+            {"%2 = OpTensorReadARM %1 %3 %4 NoneARM\n",
+             MakeInstruction(spv::Op::OpTensorReadARM,
+                             {1, 2, 3, 4,
+                              (uint32_t)spv::TensorOperandsMask::MaskNone})},
+            {"%2 = OpTensorReadARM %1 %3 %4 NontemporalARM\n",
+             MakeInstruction(
+                 spv::Op::OpTensorReadARM,
+                 {1, 2, 3, 4,
+                  (uint32_t)spv::TensorOperandsMask::NontemporalARM})},
+            {"%2 = OpTensorReadARM %1 %3 %4 OutOfBoundsValueARM %5\n",
+             MakeInstruction(
+                 spv::Op::OpTensorReadARM,
+                 {1, 2, 3, 4,
+                  (uint32_t)spv::TensorOperandsMask::OutOfBoundsValueARM, 5})},
+            {"%2 = OpTensorReadARM %1 %3 %4 MakeElementVisibleARM %5\n",
+             MakeInstruction(
+                 spv::Op::OpTensorReadARM,
+                 {1, 2, 3, 4,
+                  (uint32_t)spv::TensorOperandsMask::MakeElementVisibleARM,
+                  5})},
+            {"%2 = OpTensorReadARM %1 %3 %4 NonPrivateElementARM\n",
+             MakeInstruction(
+                 spv::Op::OpTensorReadARM,
+                 {1, 2, 3, 4,
+                  (uint32_t)spv::TensorOperandsMask::NonPrivateElementARM})},
+            {"OpTensorWriteARM %1 %2 %3\n",
+             MakeInstruction(spv::Op::OpTensorWriteARM, {1, 2, 3})},
+            {"OpTensorWriteARM %1 %2 %3 NoneARM\n",
+             MakeInstruction(spv::Op::OpTensorWriteARM,
+                             {1, 2, 3,
+                              (uint32_t)spv::TensorOperandsMask::MaskNone})},
+            {"OpTensorWriteARM %1 %2 %3 NontemporalARM\n",
+             MakeInstruction(
+                 spv::Op::OpTensorWriteARM,
+                 {1, 2, 3, (uint32_t)spv::TensorOperandsMask::NontemporalARM})},
+            {"OpTensorWriteARM %1 %2 %3 MakeElementAvailableARM %4\n",
+             MakeInstruction(
+                 spv::Op::OpTensorWriteARM,
+                 {1, 2, 3,
+                  (uint32_t)spv::TensorOperandsMask::MakeElementAvailableARM,
+                  4})},
+            {"OpTensorWriteARM %1 %2 %3 NonPrivateElementARM\n",
+             MakeInstruction(
+                 spv::Op::OpTensorWriteARM,
+                 {1, 2, 3,
+                  (uint32_t)spv::TensorOperandsMask::NonPrivateElementARM})},
+            {"%2 = OpTensorQuerySizeARM %1 %3 %4\n",
+             MakeInstruction(spv::Op::OpTensorQuerySizeARM, {1, 2, 3, 4})},
+        })));
+
+// SPV_EXT_float8
+INSTANTIATE_TEST_SUITE_P(
+    SPV_EXT_float8, ExtensionRoundTripTest,
+    Combine(
+        Values(SPV_ENV_UNIVERSAL_1_0, SPV_ENV_UNIVERSAL_1_6, SPV_ENV_VULKAN_1_0,
+               SPV_ENV_VULKAN_1_1, SPV_ENV_VULKAN_1_2, SPV_ENV_VULKAN_1_3,
+               SPV_ENV_OPENCL_2_1),
+        ValuesIn(std::vector<AssemblyCase>{
+            {"OpExtension \"SPV_EXT_float8\"\n",
+             MakeInstruction(spv::Op::OpExtension,
+                             MakeVector("SPV_EXT_float8"))},
+            {"OpCapability Float8EXT\n",
+             MakeInstruction(spv::Op::OpCapability,
+                             {(uint32_t)spv::Capability::Float8EXT})},
+            {"OpCapability Float8CooperativeMatrixEXT\n",
+             MakeInstruction(
+                 spv::Op::OpCapability,
+                 {(uint32_t)spv::Capability::Float8CooperativeMatrixEXT})},
+            {"%1 = OpTypeFloat 8 Float8E4M3EXT\n",
+             MakeInstruction(spv::Op::OpTypeFloat,
+                             {1, 8, (uint32_t)spv::FPEncoding::Float8E4M3EXT})},
+            {"%1 = OpTypeFloat 8 Float8E5M2EXT\n",
+             MakeInstruction(spv::Op::OpTypeFloat,
+                             {1, 8, (uint32_t)spv::FPEncoding::Float8E5M2EXT})},
+            {"OpDecorate %1 SaturatedToLargestFloat8NormalConversionEXT\n",
+             MakeInstruction(
+                 spv::Op::OpDecorate,
+                 {1,
+                  uint32_t(spv::Decoration::
+                               SaturatedToLargestFloat8NormalConversionEXT)})},
+        })));
+
+// SPV_INTEL_function_variants
+// https://github.com/intel/llvm/blob/sycl/sycl/doc/design/spirv-extensions/SPV_INTEL_function_variants.asciidoc
+INSTANTIATE_TEST_SUITE_P(
+    SPV_INTEL_function_variants, ExtensionRoundTripTest,
+    Combine(
+        Values(SPV_ENV_UNIVERSAL_1_0, SPV_ENV_UNIVERSAL_1_6),
+        ValuesIn(std::vector<AssemblyCase>{
+            {"OpExtension \"SPV_INTEL_function_variants\"\n",
+             MakeInstruction(spv::Op::OpExtension,
+                             MakeVector("SPV_INTEL_function_variants"))},
+            {"OpCapability SpecConditionalINTEL\n",
+             MakeInstruction(
+                 spv::Op::OpCapability,
+                 {(uint32_t)spv::Capability::SpecConditionalINTEL})},
+            {"OpCapability FunctionVariantsINTEL\n",
+             MakeInstruction(
+                 spv::Op::OpCapability,
+                 {(uint32_t)spv::Capability::FunctionVariantsINTEL})},
+            {"OpDecorate %1 ConditionalINTEL %2\n",
+             MakeInstruction(spv::Op::OpDecorate,
+                             {1, (uint32_t)spv::Decoration::ConditionalINTEL,
+                              2})},
+
+            {"OpConditionalExtensionINTEL %1 \"foo\"\n",
+             MakeInstruction(spv::Op::OpConditionalExtensionINTEL, {1},
+                             MakeVector("foo"))},
+
+            {"OpConditionalEntryPointINTEL %1 Kernel %2 \"foo\"\n",
+             MakeInstruction(spv::Op::OpConditionalEntryPointINTEL,
+                             {1, (uint32_t)spv::ExecutionModel::Kernel, 2},
+                             MakeVector("foo"))},
+
+            {"OpConditionalCapabilityINTEL %1 Kernel\n",
+             MakeInstruction(spv::Op::OpConditionalCapabilityINTEL,
+                             {1, (uint32_t)spv::ExecutionModel::Kernel})},
+
+            {"%2 = OpSpecConstantTargetINTEL %1 42\n",
+             MakeInstruction(spv::Op::OpSpecConstantTargetINTEL, {1, 2, 42})},
+
+            {"%2 = OpSpecConstantTargetINTEL %1 42 99\n",
+             MakeInstruction(spv::Op::OpSpecConstantTargetINTEL,
+                             {1, 2, 42, 99})},
+
+            {"%2 = OpSpecConstantTargetINTEL %1 42 99 108\n",
+             MakeInstruction(spv::Op::OpSpecConstantTargetINTEL,
+                             {1, 2, 42, 99, 108})},
+
+            {"%2 = OpSpecConstantArchitectureINTEL %1 42 99 108 72\n",
+             MakeInstruction(spv::Op::OpSpecConstantArchitectureINTEL,
+                             {1, 2, 42, 99, 108, 72})},
+
+            {"%2 = OpSpecConstantCapabilitiesINTEL %1\n",
+             MakeInstruction(spv::Op::OpSpecConstantCapabilitiesINTEL, {1, 2})},
+
+            {"%2 = OpSpecConstantCapabilitiesINTEL %1 Kernel\n",
+             MakeInstruction(spv::Op::OpSpecConstantCapabilitiesINTEL,
+                             {1, 2, (uint32_t)spv::Capability::Kernel})},
+
+            {"%2 = OpSpecConstantCapabilitiesINTEL %1 Kernel Shader\n",
+             MakeInstruction(spv::Op::OpSpecConstantCapabilitiesINTEL,
+                             {1, 2, (uint32_t)spv::Capability::Kernel,
+                              (uint32_t)spv::Capability::Shader})},
+
+            {"%2 = OpConditionalCopyObjectINTEL %1 %3 %4\n",
+             MakeInstruction(spv::Op::OpConditionalCopyObjectINTEL,
+                             {1, 2, 3, 4})},
+
+            {"%2 = OpConditionalCopyObjectINTEL %1 %3 %4 %5 %6\n",
+             MakeInstruction(spv::Op::OpConditionalCopyObjectINTEL,
+                             {1, 2, 3, 4, 5, 6})},
+
+        })));
+
+// SPV_ARM_graph
+INSTANTIATE_TEST_SUITE_P(
+    SPV_ARM_graph, ExtensionRoundTripTest,
+    Combine(Values(SPV_ENV_UNIVERSAL_1_0, SPV_ENV_UNIVERSAL_1_6,
+                   SPV_ENV_VULKAN_1_0, SPV_ENV_VULKAN_1_1, SPV_ENV_VULKAN_1_2,
+                   SPV_ENV_VULKAN_1_3, SPV_ENV_OPENCL_2_1),
+            ValuesIn(std::vector<AssemblyCase>{
+                {"OpExtension \"SPV_ARM_graph\"\n",
+                 MakeInstruction(spv::Op::OpExtension,
+                                 MakeVector("SPV_ARM_graph"))},
+                {"OpCapability GraphARM\n",
+                 MakeInstruction(spv::Op::OpCapability,
+                                 {(uint32_t)spv::Capability::GraphARM})},
+                {"%1 = OpTypeGraphARM 1 %2 %3\n",
+                 MakeInstruction(spv::Op::OpTypeGraphARM, {1, 1, 2, 3})},
+                {"%2 = OpGraphConstantARM %1 42\n",
+                 MakeInstruction(spv::Op::OpGraphConstantARM, {1, 2, 42})},
+                {"%2 = OpGraphARM %1\n",
+                 MakeInstruction(spv::Op::OpGraphARM, {1, 2})},
+                {"OpGraphEndARM\n",
+                 MakeInstruction(spv::Op::OpGraphEndARM, {})},
+                {"%2 = OpGraphInputARM %1 %3\n",
+                 MakeInstruction(spv::Op::OpGraphInputARM, {1, 2, 3})},
+                {"%2 = OpGraphInputARM %1 %3 %4\n",
+                 MakeInstruction(spv::Op::OpGraphInputARM, {1, 2, 3, 4})},
+                {"OpGraphSetOutputARM %1 %2\n",
+                 MakeInstruction(spv::Op::OpGraphSetOutputARM, {1, 2})},
+                {"OpGraphSetOutputARM %1 %2 %3\n",
+                 MakeInstruction(spv::Op::OpGraphSetOutputARM, {1, 2, 3})},
+            })));
+
+// SPV_EXT_ocp_microscaling_types
+INSTANTIATE_TEST_SUITE_P(
+    SPV_EXT_ocp_microscaling_types, ExtensionRoundTripTest,
+    Combine(
+        Values(SPV_ENV_UNIVERSAL_1_0, SPV_ENV_UNIVERSAL_1_6, SPV_ENV_VULKAN_1_0,
+               SPV_ENV_VULKAN_1_1, SPV_ENV_VULKAN_1_2, SPV_ENV_VULKAN_1_3,
+               SPV_ENV_OPENCL_2_1),
+        ValuesIn(std::vector<AssemblyCase>{
+            {"OpExtension \"SPV_EXT_ocp_microscaling_types\"\n",
+             MakeInstruction(spv::Op::OpExtension,
+                             MakeVector("SPV_EXT_ocp_microscaling_types"))},
+            {"OpCapability Float6EXT\n",
+             MakeInstruction(spv::Op::OpCapability,
+                             {(uint32_t)spv::Capability::Float6EXT})},
+            {"OpCapability Float4EXT\n",
+             MakeInstruction(spv::Op::OpCapability,
+                             {(uint32_t)spv::Capability::Float4EXT})},
+            {"OpCapability Float8UnsignedE8M0EXT\n",
+             MakeInstruction(
+                 spv::Op::OpCapability,
+                 {(uint32_t)spv::Capability::Float8UnsignedE8M0EXT})},
+            {"OpCapability MXInt8EXT\n",
+             MakeInstruction(spv::Op::OpCapability,
+                             {(uint32_t)spv::Capability::MXInt8EXT})},
+            {"OpCapability BitcastExtractEXT\n",
+             MakeInstruction(spv::Op::OpCapability,
+                             {(uint32_t)spv::Capability::BitcastExtractEXT})},
+            {"%1 = OpTypeFloat 6 Float6E2M3EXT\n",
+             MakeInstruction(spv::Op::OpTypeFloat,
+                             {1, 6, (uint32_t)spv::FPEncoding::Float6E2M3EXT})},
+            {"%1 = OpTypeFloat 6 Float6E3M2EXT\n",
+             MakeInstruction(spv::Op::OpTypeFloat,
+                             {1, 6, (uint32_t)spv::FPEncoding::Float6E3M2EXT})},
+            {"%1 = OpTypeFloat 4 Float4E2M1EXT\n",
+             MakeInstruction(spv::Op::OpTypeFloat,
+                             {1, 4, (uint32_t)spv::FPEncoding::Float4E2M1EXT})},
+            {"%1 = OpTypeFloat 8 Float8UnsignedE8M0EXT\n",
+             MakeInstruction(
+                 spv::Op::OpTypeFloat,
+                 {1, 8, (uint32_t)spv::FPEncoding::Float8UnsignedE8M0EXT})},
+            {"%1 = OpTypeFloat 8 MXInt8EXT\n",
+             MakeInstruction(spv::Op::OpTypeFloat,
+                             {1, 8, (uint32_t)spv::FPEncoding::MXInt8EXT})},
+            {"%2 = OpBitcastExtractEXT %1 %3 %4\n",
+             MakeInstruction(spv::Op::OpBitcastExtractEXT, {1, 2, 3, 4})},
+        })));
+
+// SPV_KHR_abort
+INSTANTIATE_TEST_SUITE_P(
+    SPV_KHR_abort, ExtensionRoundTripTest,
+    Combine(Values(SPV_ENV_UNIVERSAL_1_0, SPV_ENV_UNIVERSAL_1_6,
+                   SPV_ENV_VULKAN_1_0, SPV_ENV_VULKAN_1_1, SPV_ENV_VULKAN_1_2,
+                   SPV_ENV_VULKAN_1_3),
+            ValuesIn(std::vector<AssemblyCase>{
+                {"OpExtension \"SPV_KHR_abort\"\n",
+                 MakeInstruction(spv::Op::OpExtension,
+                                 MakeVector("SPV_KHR_abort"))},
+                {"OpCapability AbortKHR\n",
+                 MakeInstruction(spv::Op::OpCapability,
+                                 {(uint32_t)spv::Capability::AbortKHR})},
+                {"OpAbortKHR %1 %2\n",
+                 MakeInstruction(spv::Op::OpAbortKHR, {1, 2})},
+            })));
+
+// SPV_KHR_constant_data
+INSTANTIATE_TEST_SUITE_P(
+    SPV_KHR_constant_data, ExtensionRoundTripTest,
+    Combine(
+        Values(SPV_ENV_UNIVERSAL_1_0, SPV_ENV_UNIVERSAL_1_6, SPV_ENV_VULKAN_1_0,
+               SPV_ENV_VULKAN_1_1, SPV_ENV_VULKAN_1_2, SPV_ENV_VULKAN_1_3),
+        ValuesIn(std::vector<AssemblyCase>{
+            {"OpExtension \"SPV_KHR_constant_data\"\n",
+             MakeInstruction(spv::Op::OpExtension,
+                             MakeVector("SPV_KHR_constant_data"))},
+            {"OpCapability ConstantDataKHR\n",
+             MakeInstruction(spv::Op::OpCapability,
+                             {(uint32_t)spv::Capability::ConstantDataKHR})},
+            {"%2 = OpConstantDataKHR %1 1718578944\n",
+             MakeInstruction(spv::Op::OpConstantDataKHR, {1, 2, 0x666F6F00})},
+            {"%2 = OpSpecConstantDataKHR %1 1718578944\n",
+             MakeInstruction(spv::Op::OpSpecConstantDataKHR,
+                             {1, 2, 0x666F6F00})},
+            {"OpDecorate %1 UTFEncodedKHR\n",
+             MakeInstruction(spv::Op::OpDecorate,
+                             {1, (uint32_t)spv::Decoration::UTFEncodedKHR})},
+
+        })));
+
+TEST_F(TextToBinaryTest, ConstantDataNonUTF) {
+  const std::string source = R"(
+               OpCapability Shader
+               OpCapability ConstantDataKHR
+               OpCapability Int8
+               OpExtension "SPV_KHR_constant_data"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main"
+               OpExecutionMode %main LocalSize 1 1 1
+       %void = OpTypeVoid
+       %uint = OpTypeInt 32 0
+       %char = OpTypeInt 8 1
+    %uint_20 = OpConstant %uint 20
+ %char_array = OpTypeArray %char %uint_20
+               ; "abcd" where "a" is 0x61 ascii
+       %data = OpConstantDataKHR %char_array 0x10203040
+  %void_func = OpTypeFunction %void
+       %main = OpFunction %void None %void_func
+ %main_label = OpLabel
+               OpReturn
+               OpFunctionEnd
+    )";
+
+  auto context = spvContextCreate(SPV_ENV_UNIVERSAL_1_1);
+  spv_binary binary = nullptr;
+  EXPECT_EQ(SPV_SUCCESS, spvTextToBinary(context, source.c_str(), source.size(),
+                                         &binary, nullptr));
+
+  // Opcode for OpConstantDataKHR
+  EXPECT_EQ((binary->code[50] & 0x0ffffu), 5147);
+  EXPECT_EQ(((binary->code[53] & 0xff000000u) >> 24), 0x10);
+  EXPECT_EQ(((binary->code[53] & 0x00ff0000u) >> 16), 0x20);
+  EXPECT_EQ(((binary->code[53] & 0x0000ff00u) >> 8), 0x30);
+  EXPECT_EQ(((binary->code[53] & 0x000000ffu)), 0x40);
+
+  spvBinaryDestroy(binary);
+  spvContextDestroy(context);
+}
+
+// SPV_QCOM_image_processing3
+INSTANTIATE_TEST_SUITE_P(
+    SPV_QCOM_image_processing3, ExtensionRoundTripTest,
+    Combine(
+        Values(SPV_ENV_UNIVERSAL_1_4, SPV_ENV_UNIVERSAL_1_6, SPV_ENV_VULKAN_1_1,
+               SPV_ENV_VULKAN_1_4),
+        ValuesIn(std::vector<AssemblyCase>{
+            {"OpExtension \"SPV_QCOM_image_processing3\"\n",
+             MakeInstruction(spv::Op::OpExtension,
+                             MakeVector("SPV_QCOM_image_processing3"))},
+            {"OpCapability ImageGatherLinearQCOM\n",
+             MakeInstruction(
+                 spv::Op::OpCapability,
+                 {(uint32_t)spv::Capability::ImageGatherLinearQCOM})},
+            {"OpCapability ImageGatherExtendedModesQCOM\n",
+             MakeInstruction(
+                 spv::Op::OpCapability,
+                 {(uint32_t)spv::Capability::ImageGatherExtendedModesQCOM})},
+            {"%2 = OpImageGatherQCOM %1 %3 %4 %5 %6\n",
+             MakeInstruction(spv::Op::OpImageGatherQCOM, {1, 2, 3, 4, 5, 6})},
+            // Prove that we parse image operands afterward
+            {"%2 = OpImageGatherQCOM %1 %3 %4 %5 %6 Lod %7\n",
+             MakeInstruction(spv::Op::OpImageGatherQCOM,
+                             {1, 2, 3, 4, 5, 6, 2, 7})},
         })));
 
 }  // namespace

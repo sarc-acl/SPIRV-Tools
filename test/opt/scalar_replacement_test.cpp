@@ -27,7 +27,7 @@ using ScalarReplacementPassName = ::testing::Test;
 
 TEST_F(ScalarReplacementPassName, Default) {
   auto srp = ScalarReplacementPass();
-  EXPECT_STREQ(srp.name(), "scalar-replacement=100");
+  EXPECT_STREQ(srp.name(), "scalar-replacement=0");
 }
 
 TEST_F(ScalarReplacementPassName, Large) {
@@ -1863,6 +1863,7 @@ OpReturn
 OpFunctionEnd
 )";
 
+  ValidatorOptions()->relax_logical_pointer = true;
   auto result =
       SinglePassRunAndDisassemble<ScalarReplacementPass>(text, true, true, 0);
   EXPECT_EQ(Pass::Status::SuccessWithoutChange, std::get<1>(result));

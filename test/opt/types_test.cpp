@@ -226,6 +226,7 @@ std::vector<std::unique_ptr<Type>> GenerateAllTypes() {
   types.emplace_back(new Pointer(sts32f32, spv::StorageClass::Function));
   types.emplace_back(new Pointer(a42f32, spv::StorageClass::Function));
   types.emplace_back(new Pointer(voidt, spv::StorageClass::Function));
+  types.emplace_back(new Pointer(nullptr, spv::StorageClass::Uniform));
 
   // Function
   types.emplace_back(new Function(voidt, {}));
@@ -331,6 +332,50 @@ TEST(Types, TestNumberOfComponentsOnStructs) {
   EXPECT_EQ(struct_100xf32.NumberOfComponents(), 100);
 }
 
+TEST(Types, GetByteOffset) {
+  Integer i32(32, true);
+  Float f64(64);
+  Vector v4i32(&i32, 4);
+
+  // Struct: { i32, v4i32, f64 }
+  Struct s1({&i32, &v4i32, &f64});
+  s1.AddMemberDecoration(0, {uint32_t(spv::Decoration::Offset), 0});
+  s1.AddMemberDecoration(1, {uint32_t(spv::Decoration::Offset), 16});
+  s1.AddMemberDecoration(2, {uint32_t(spv::Decoration::Offset), 32});
+
+  EXPECT_EQ(s1.GetByteOffset({0}).value(), 0);
+  EXPECT_EQ(s1.GetByteOffset({1}).value(), 16);
+  EXPECT_EQ(s1.GetByteOffset({2}).value(), 32);
+
+  // Into the vector
+  EXPECT_EQ(s1.GetByteOffset({1, 0}).value(), 16);
+  EXPECT_EQ(s1.GetByteOffset({1, 1}).value(), 20);
+  EXPECT_EQ(s1.GetByteOffset({1, 3}).value(), 28);
+
+  // Array of struct: { i32, v4i32, f64 }[10]
+  Array::LengthInfo len_info{1, {Array::LengthInfo::kConstant, 10}};
+  Array arr(&s1, len_info);
+  arr.AddDecoration({uint32_t(spv::Decoration::ArrayStride), 48});
+
+  // arr[2].v4i32[3]
+  EXPECT_EQ(arr.GetByteOffset({2, 1, 3}).value(), 48 * 2 + 16 + 12);
+
+  // Matrix: 4x4 of f64
+  Vector v4f64(&f64, 4);
+  Matrix m(&v4f64, 4);
+  m.AddDecoration({uint32_t(spv::Decoration::MatrixStride), 32});
+
+  // m[1][2]
+  EXPECT_EQ(m.GetByteOffset({1, 2}).value(), 32 * 1 + 8 * 2);
+
+  // Missing decorations -> returns nullopt
+  Struct s_no_deco({&i32, &f64});
+  EXPECT_FALSE(s_no_deco.GetByteOffset({1}).has_value());
+
+  Array arr_no_deco(&i32, len_info);
+  EXPECT_FALSE(arr_no_deco.GetByteOffset({2}).has_value());
+}
+
 TEST(Types, IntSignedness) {
   std::vector<bool> signednesses = {true, false, false, true};
   std::vector<std::unique_ptr<Integer>> types;
@@ -361,6 +406,20 @@ TEST(Types, FloatWidth) {
   }
   for (size_t i = 0; i < widths.size(); i++) {
     EXPECT_EQ(widths[i], types[i]->width());
+  }
+}
+
+TEST(Types, FloatFPEncoding) {
+  std::vector<spv::FPEncoding> encodings = {
+      spv::FPEncoding::BFloat16KHR,
+      spv::FPEncoding::Max,
+  };
+  std::vector<std::unique_ptr<Float>> types;
+  for (spv::FPEncoding encoding : encodings) {
+    types.emplace_back(new Float(16, encoding));
+  }
+  for (size_t i = 0; i < encodings.size(); i++) {
+    EXPECT_EQ(encodings[i], types[i]->encoding());
   }
 }
 
@@ -441,6 +500,15 @@ TEST(Types, RemoveDecorations) {
               t->decoration_empty());
     EXPECT_NE(t.get(), decorationless.get());
   }
+}
+
+TEST(Types, UntypedPointer) {
+  std::unique_ptr<Type> type(new Pointer(nullptr, spv::StorageClass::Uniform));
+  const auto untyped = type->AsPointer();
+  EXPECT_NE(untyped, nullptr);
+  EXPECT_TRUE(untyped->is_untyped());
+  EXPECT_EQ(untyped->pointee_type(), nullptr);
+  EXPECT_EQ(untyped->storage_class(), spv::StorageClass::Uniform);
 }
 
 }  // namespace

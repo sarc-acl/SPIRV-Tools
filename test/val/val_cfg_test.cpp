@@ -2600,20 +2600,20 @@ TEST_F(ValidateCFG, VarPtrShaderWithPhiPtr) {
                OpExecutionMode %1 LocalSize 1 1 1
                OpSource HLSL 600
        %bool = OpTypeBool
-%_ptr_Function_bool = OpTypePointer Function %bool
+%_ptr_Workgroup_bool = OpTypePointer Workgroup %bool
+          %7 = OpVariable %_ptr_Workgroup_bool Workgroup
+          %8 = OpVariable %_ptr_Workgroup_bool Workgroup
        %void = OpTypeVoid
           %5 = OpTypeFunction %void
           %1 = OpFunction %void None %5
           %6 = OpLabel
-          %7 = OpVariable %_ptr_Function_bool Function
-          %8 = OpVariable %_ptr_Function_bool Function
           %9 = OpUndef %bool
                OpSelectionMerge %10 None
                OpBranchConditional %9 %11 %10
          %11 = OpLabel
                OpBranch %10
          %10 = OpLabel
-         %12 = OpPhi %_ptr_Function_bool %7 %6 %8 %11
+         %12 = OpPhi %_ptr_Workgroup_bool %7 %6 %8 %11
                OpReturn
                OpFunctionEnd
 )";
@@ -2625,7 +2625,7 @@ TEST_F(ValidateCFG, VarPtrShaderWithPhiPtr) {
 TEST_F(ValidateCFG, VarPtrStgBufShaderWithPhiStgBufPtr) {
   const std::string text = R"(
                OpCapability Shader
-               OpCapability VariablePointersStorageBuffer
+               OpCapability VariablePointers
                OpExtension "SPV_KHR_variable_pointers"
                OpMemoryModel Logical GLSL450
                OpEntryPoint GLCompute %1 "main"
@@ -4316,7 +4316,7 @@ TEST_F(ValidateCFG, StructuredSelections_RegisterBothTrueAndFalse) {
     OpMemoryModel Logical Simple
     OpEntryPoint Fragment %main "main"
     OpExecutionMode %main OriginUpperLeft
-    
+
     %void    = OpTypeVoid
     %void_fn = OpTypeFunction %void
 
@@ -5118,6 +5118,104 @@ OpFunctionEnd
   EXPECT_EQ(SPV_SUCCESS, ValidateInstructions());
 }
 
+TEST_F(ValidateCFG, MaximalReconvergenceInvocationRepack) {
+  const std::string text = R"(
+    OpCapability RayTracingKHR
+    OpExtension "SPV_KHR_ray_tracing"
+    OpExtension "SPV_KHR_maximal_reconvergence"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint CallableKHR %main "main"
+    OpExecutionMode %main MaximallyReconvergesKHR
+    %void = OpTypeVoid
+    %func = OpTypeFunction %void
+    %int = OpTypeInt 32 1
+    %uint = OpTypeInt 32 0
+    %uint_0 = OpConstant %uint 0
+    %data_ptr = OpTypePointer CallableDataKHR %int
+    %data = OpVariable %data_ptr CallableDataKHR
+    %helper = OpFunction %void None %func
+    %helper_entry = OpLabel
+    OpExecuteCallableKHR %uint_0 %data
+    OpReturn
+    OpFunctionEnd
+    %main = OpFunction %void None %func
+    %label = OpLabel
+    %call = OpFunctionCall %void %helper
+    OpReturn
+    OpFunctionEnd
+    )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_0);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-MaximallyReconvergesKHR-09565"));
+}
+
+TEST_F(ValidateCFG, MaximalReconvergenceInvocationRepackDirectUse) {
+  const std::string text = R"(
+    OpCapability RayTracingKHR
+    OpExtension "SPV_KHR_ray_tracing"
+    OpExtension "SPV_KHR_maximal_reconvergence"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint CallableKHR %main "main"
+    OpExecutionMode %main MaximallyReconvergesKHR
+    %void = OpTypeVoid
+    %func = OpTypeFunction %void
+    %int = OpTypeInt 32 1
+    %uint = OpTypeInt 32 0
+    %uint_0 = OpConstant %uint 0
+    %data_ptr = OpTypePointer CallableDataKHR %int
+    %data = OpVariable %data_ptr CallableDataKHR
+    %main = OpFunction %void None %func
+    %label = OpLabel
+    OpExecuteCallableKHR %uint_0 %data
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_0);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-MaximallyReconvergesKHR-09565"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("The MaximallyReconvergesKHR Execution Mode must not be "
+                "applied to an entry point if an invocation repack "
+                "instruction (OpExecuteCallableKHR) is statically "
+                "used"));
+}
+
+TEST_F(ValidateCFG, MaximalReconvergenceInvocationRepackInOtherEntryPoint) {
+  const std::string text = R"(
+    OpCapability RayTracingKHR
+    OpExtension "SPV_KHR_ray_tracing"
+    OpExtension "SPV_KHR_maximal_reconvergence"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint CallableKHR %main "main"
+    OpEntryPoint CallableKHR %other "other"
+    OpExecutionMode %main MaximallyReconvergesKHR
+    %void = OpTypeVoid
+    %func = OpTypeFunction %void
+    %int = OpTypeInt 32 1
+    %uint = OpTypeInt 32 0
+    %uint_0 = OpConstant %uint 0
+    %data_ptr = OpTypePointer CallableDataKHR %int
+    %data = OpVariable %data_ptr CallableDataKHR
+    %main = OpFunction %void None %func
+    %label = OpLabel
+    OpReturn
+    OpFunctionEnd
+    %other = OpFunction %void None %func
+    %other_label = OpLabel
+    OpExecuteCallableKHR %uint_0 %data
+    OpReturn
+    OpFunctionEnd
+    )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_0);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+}
+
 TEST_F(ValidateCFG, StructurallyUnreachableContinuePredecessor) {
   const std::string text = R"(
                OpCapability Shader
@@ -5239,6 +5337,156 @@ OpFunctionEnd
 
   CompileSuccessfully(text);
   EXPECT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateCFG, LifetimeGood) {
+  const std::string text = R"(
+           OpCapability Kernel
+           OpCapability Addresses
+           OpCapability Int64
+           OpCapability Int8
+           OpMemoryModel Physical64 OpenCL
+           OpEntryPoint Kernel %func "main"
+           OpExecutionMode %func ContractionOff
+           OpDecorate %24 Alignment 4
+   %uint = OpTypeInt 32 0
+   %void = OpTypeVoid
+      %5 = OpTypeFunction %void
+  %ulong = OpTypeInt 64 0
+ %uint_4 = OpConstant %uint 4
+%_arr_uint_4 = OpTypeArray %uint %uint_4
+%_ptr_arr_uint_4 = OpTypePointer Function %_arr_uint_4
+      %uchar = OpTypeInt 8 0
+%_ptr_uchar = OpTypePointer Function %uchar
+    %14 = OpTypeFunction %void %_ptr_uchar
+%_ptr_uint = OpTypePointer Function %uint
+  %bool = OpTypeBool
+%uint_n = OpConstantNull %uint
+%uint_1 = OpConstant %uint 1
+  %func = OpFunction %void None %5
+    %52 = OpLabel
+    %24 = OpVariable %_ptr_arr_uint_4 Function
+    %28 = OpSGreaterThan %bool %uint_1 %uint_n
+          OpBranchConditional %28 %53 %54
+    %53 = OpLabel
+    %29 = OpBitcast %_ptr_uchar %24
+
+          OpLifetimeStart %29 16
+    %30 = OpBitcast %_ptr_uint %24
+          OpStore %30 %uint_1 Aligned 4
+    %36 = OpBitcast %_ptr_uchar %24
+          OpLifetimeStop %36 16
+
+          OpBranch %54
+    %54 = OpLabel
+          OpReturn
+          OpFunctionEnd
+)";
+
+  CompileSuccessfully(text);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateCFG, LifetimeStorageClass) {
+  const std::string text = R"(
+           OpCapability Kernel
+           OpCapability Addresses
+           OpCapability Int64
+           OpCapability Int8
+           OpMemoryModel Physical64 OpenCL
+           OpEntryPoint Kernel %func "main"
+           OpExecutionMode %func ContractionOff
+           OpDecorate %24 Alignment 4
+   %uint = OpTypeInt 32 0
+   %void = OpTypeVoid
+      %5 = OpTypeFunction %void
+  %ulong = OpTypeInt 64 0
+ %uint_4 = OpConstant %uint 4
+%_arr_uint_4 = OpTypeArray %uint %uint_4
+%_ptr_arr_uint_4 = OpTypePointer Function %_arr_uint_4
+      %uchar = OpTypeInt 8 0
+%_ptr_uchar = OpTypePointer CrossWorkgroup %uchar
+    %14 = OpTypeFunction %void %_ptr_uchar
+%_ptr_uint = OpTypePointer Function %uint
+  %bool = OpTypeBool
+%uint_n = OpConstantNull %uint
+%uint_1 = OpConstant %uint 1
+  %func = OpFunction %void None %5
+    %52 = OpLabel
+    %24 = OpVariable %_ptr_arr_uint_4 Function
+    %28 = OpSGreaterThan %bool %uint_1 %uint_n
+          OpBranchConditional %28 %53 %54
+    %53 = OpLabel
+    %29 = OpBitcast %_ptr_uchar %24
+
+          OpLifetimeStart %29 16
+    %30 = OpBitcast %_ptr_uint %24
+          OpStore %30 %uint_1 Aligned 4
+    %36 = OpBitcast %_ptr_uchar %24
+          OpLifetimeStop %36 16
+
+          OpBranch %54
+    %54 = OpLabel
+          OpReturn
+          OpFunctionEnd
+)";
+
+  CompileSuccessfully(text);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpLifetimeStart pointer operand must be in the "
+                        "Function storage class"));
+}
+
+TEST_F(ValidateCFG, LifetimeNonPointer) {
+  const std::string text = R"(
+           OpCapability Kernel
+           OpCapability Addresses
+           OpCapability Int64
+           OpCapability Int8
+           OpMemoryModel Physical64 OpenCL
+           OpEntryPoint Kernel %func "main"
+           OpExecutionMode %func ContractionOff
+           OpDecorate %24 Alignment 4
+   %uint = OpTypeInt 32 0
+   %void = OpTypeVoid
+      %5 = OpTypeFunction %void
+  %ulong = OpTypeInt 64 0
+ %uint_4 = OpConstant %uint 4
+%_arr_uint_4 = OpTypeArray %uint %uint_4
+%_ptr_arr_uint_4 = OpTypePointer Function %_arr_uint_4
+      %uchar = OpTypeInt 8 0
+%_ptr_uchar = OpTypePointer Function %uchar
+    %14 = OpTypeFunction %void %_ptr_uchar
+%_ptr_uint = OpTypePointer Function %uint
+  %bool = OpTypeBool
+%uint_n = OpConstantNull %uint
+%uint_1 = OpConstant %uint 1
+  %func = OpFunction %void None %5
+    %52 = OpLabel
+    %24 = OpVariable %_ptr_arr_uint_4 Function
+    %28 = OpSGreaterThan %bool %uint_1 %uint_n
+          OpBranchConditional %28 %53 %54
+    %53 = OpLabel
+
+          OpLifetimeStart %28 16
+    %30 = OpBitcast %_ptr_uint %24
+          OpStore %30 %uint_1 Aligned 4
+    %36 = OpBitcast %_ptr_uchar %24
+          OpLifetimeStop %36 16
+
+          OpBranch %54
+    %54 = OpLabel
+          OpReturn
+          OpFunctionEnd
+)";
+
+  CompileSuccessfully(text);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "OpLifetimeStart pointer operand type must be a OpTypePointer"));
 }
 
 }  // namespace

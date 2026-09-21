@@ -22,17 +22,18 @@ set -x
 
 # This is required to run any git command in the docker since owner will
 # have changed between the clone environment, and the docker container.
-# Marking the root of the repo as safe for ownership changes.
-git config --global --add safe.directory $ROOT_DIR
+# Mark all repositories as safe for ownership changes.
+git config --global --add safe.directory '*'
 
 . /bin/using.sh # Declare the bash `using` function for configuring toolchains.
 
+using git-2.53.0
 using python-3.12
 
 if [ $COMPILER = "clang" ]; then
-  using clang-10.0.0
+  using clang-18
 elif [ $COMPILER = "gcc" ]; then
-  using gcc-9
+  using gcc-15
 fi
 
 cd $ROOT_DIR
@@ -42,23 +43,27 @@ function clean_dir() {
   if [[ -d "$dir" ]]; then
     rm -fr "$dir"
   fi
-  mkdir "$dir"
+  mkdir -p "$dir"
 }
 
-if [ $TOOL != "cmake-smoketest" ]; then
-  # Get source for dependencies, as specified in the DEPS file
-  /usr/bin/python3 utils/git-sync-deps --treeless
-fi
+case $TOOL in
+  cmake-shaderc-smoketest|cmake-dxc-smoketest|gn)
+    ;;
+  *)
+    # Get source for dependencies, as specified in the DEPS file
+    python3 utils/git-sync-deps --prefix=external --treeless
+esac
+
 
 if [ $TOOL = "cmake" ]; then
-  using cmake-3.17.2
+  using cmake-3.31.2
   using ninja-1.10.0
 
   # Possible configurations are:
   # ASAN, UBSAN, COVERAGE, RELEASE, DEBUG, DEBUG_EXCEPTION, RELEASE_MINGW
   BUILD_TYPE="Debug"
   if [ $CONFIG = "RELEASE" ] || [ $CONFIG = "RELEASE_MINGW" ]; then
-    BUILD_TYPE="RelWithDebInfo"
+    BUILD_TYPE="Release"
   fi
 
   SKIP_TESTS="False"
@@ -83,8 +88,13 @@ if [ $TOOL = "cmake" ]; then
     SKIP_TESTS="True"
   fi
 
-  if [ $COMPILER = "clang" ]; then
+  # Build fuzzers on selected configurations.
+  if [ $COMPILER-$CONFIG = "clang-RELEASE" ]; then
+    # Build targets that fuzz the assembler, binary parser, disassembler,
+    # optimizer, and validator.
     ADDITIONAL_CMAKE_FLAGS="$ADDITIONAL_CMAKE_FLAGS -DSPIRV_BUILD_LIBFUZZER_TARGETS=ON"
+    # Build spirv-fuzz, including its protobuf dependency
+    ADDITIONAL_CMAKE_FLAGS="$ADDITIONAL_CMAKE_FLAGS -DSPIRV_BUILD_FUZZER=ON"
   fi
 
   clean_dir "$ROOT_DIR/build"
@@ -115,8 +125,8 @@ if [ $TOOL = "cmake" ]; then
   ninja install
   cd $KOKORO_ARTIFACTS_DIR
   tar czf install.tgz install
-elif [ $TOOL = "cmake-smoketest" ]; then
-  using cmake-3.17.2
+elif [ $TOOL = "cmake-shaderc-smoketest" ]; then
+  using cmake-3.31.2
   using ninja-1.10.0
 
   # Get shaderc.
@@ -156,9 +166,46 @@ elif [ $TOOL = "cmake-smoketest" ]; then
   echo $(date): Starting ctest...
   ctest --output-on-failure -j4
   echo $(date): ctest completed.
+elif [ $TOOL = "cmake-dxc-smoketest" ]; then
+  using cmake-3.31.2
+  using ninja-1.10.0
+
+  # Get shaderc.
+  DXC_DIR=/tmp/dxc
+  clean_dir "$DXC_DIR"
+  cd $DXC_DIR
+  git clone https://github.com/microsoft/DirectXShaderCompiler.git .
+  cd $DXC_DIR/external
+
+  # Get DXC dependencies. Link the appropriate SPIRV-Tools.
+  git submodule update --init DirectX-Headers
+  rm -rf SPIRV-Tools
+  ln -s $ROOT_DIR SPIRV-Tools
+  git clone https://github.com/KhronosGroup/SPIRV-Headers.git SPIRV-Headers
+
+  cd $DXC_DIR
+  mkdir build
+  cd $DXC_DIR/build
+
+  # Invoke the build.
+  echo $(date): Configuring build...
+  cmake $DXC_DIR \
+  -C $DXC_DIR/cmake/caches/PredefinedParams.cmake \
+  -DCMAKE_BUILD_TYPE="Release" \
+  -G Ninja
+
+  echo $(date): Building ClangSPIRVTests...
+  ninja ClangSPIRVTests
+
+  echo $(date): Testing ClangSPIRVTests...
+  tools/clang/unittests/SPIRV/ClangSPIRVTests
+
+  echo $(date): Testing check-clang-codegenspirv...
+  ninja check-clang-codegenspirv
+
 elif [ $TOOL = "cmake-android-ndk" ]; then
-  using cmake-3.17.2
-  using ndk-r25c
+  using cmake-3.31.2
+  using ndk-r29
   using ninja-1.10.0
 
   clean_dir "$ROOT_DIR/build"
@@ -178,7 +225,7 @@ elif [ $TOOL = "cmake-android-ndk" ]; then
   ninja
   echo $(date): Build completed.
 elif [ $TOOL = "android-ndk-build" ]; then
-  using ndk-r25c
+  using ndk-r29
 
   clean_dir "$ROOT_DIR/build"
   cd "$ROOT_DIR/build"
@@ -193,7 +240,7 @@ elif [ $TOOL = "android-ndk-build" ]; then
 
   echo $(date): ndk-build completed.
 elif [ $TOOL = "bazel" ]; then
-  using bazel-7.0.2
+  using bazel-8.7.0
 
   echo $(date): Build everything...
   bazel build --cxxopt=-std=c++17 :all
@@ -202,4 +249,54 @@ elif [ $TOOL = "bazel" ]; then
   echo $(date): Starting bazel test...
   bazel test --cxxopt=-std=c++17 :all
   echo $(date): Bazel test completed.
+
+elif [ $TOOL = "gn" ]; then
+  using ninja-1.10.0
+  echo $(date -Iseconds): Start GN build...
+
+  echo "$(date -Iseconds): Fetching depot_tools..."
+  rm -rf /tmp/depot_tools
+  mkdir -p /tmp/depot_tools
+  git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git /tmp/depot_tools
+  export PATH="/tmp/depot_tools:$PATH"
+
+  echo "$(date -Iseconds): Syncing client..."
+  # Silence gn related babble
+  export GCLIENT_SUPPRESS_GIT_VERSION_WARNING=1
+  # For the 'root' user, silence gclient metrics collection.
+  if [[ -z "$USER" ]]; then
+    mkdir -p $HOME/.config/depot_tools
+    echo  >$HOME/.config/depot_tools/metrics.cfg '{"is-googler": false, "countdown": 0, "opt-in": false, "version": 1}'
+  fi
+
+  # Erase the GN args from any previous run of gclient.
+  # This is important for local testing.
+  rm -f build/config/gclient_args.gni
+
+  # Sync dependencies and generate default GN args from the DEPS file.
+  cp utils/standalone.gclient .
+  gclient sync -v -D --gclientfile=standalone.gclient
+
+  echo "$(date -Iseconds): Generate Ninja build plan..."
+
+  # Ensure the gn binary is on the path
+  export PATH=$(pwd)/buildtools/linux64:$PATH
+  # which -a gn  # There should be two
+
+  if [ $CONFIG = "RELEASE" ]; then
+    arg="is_debug=false"
+    BUILD_DIR=out/release
+  else
+    arg="is_debug=true"
+    BUILD_DIR=out/debug
+  fi
+  clean_dir "$BUILD_DIR"
+  gn gen "$BUILD_DIR" --args="$arg"
+
+  echo "$(date -Iseconds): Building..."
+  ninja -v -C "$BUILD_DIR"
+  echo "$(date -Iseconds): Done"
+
+else
+  echo "Unknown TOOL '$TOOL'"
 fi

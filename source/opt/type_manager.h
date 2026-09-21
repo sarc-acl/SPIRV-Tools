@@ -34,7 +34,7 @@ namespace analysis {
 
 // Hashing functor.
 //
-// All type pointers must be non-null.
+// All type pointers must be non-null to reach here.
 struct HashTypePointer {
   size_t operator()(const Type* type) const {
     assert(type);
@@ -203,7 +203,11 @@ class TypeManager {
     return GetRegisteredType(&bool_type);
   }
 
-  uint32_t GetBoolTypeId() { return GetTypeInstruction(GetBoolType()); }
+  uint32_t GetBoolTypeId() {
+    Type* bool_type = GetBoolType();
+    if (bool_type == nullptr) return 0;
+    return GetTypeInstruction(bool_type);
+  }
 
   Type* GetVoidType() {
     Void void_type;

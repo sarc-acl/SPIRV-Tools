@@ -1,6 +1,7 @@
 // Copyright (c) 2018 Google LLC.
-// Modifications Copyright (C) 2020 Advanced Micro Devices, Inc. All rights
-// reserved.
+// Modifications Copyright (C) 2020-2024 Advanced Micro Devices, Inc. All
+// rights reserved.
+// Copyright (C) 2026 Qualcomm Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,11 +16,13 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 #include "source/opcode.h"
 #include "source/spirv_target_env.h"
+#include "source/table2.h"
 #include "source/val/instruction.h"
 #include "source/val/validate.h"
 #include "source/val/validate_scopes.h"
@@ -38,15 +41,15 @@ bool HaveSameLayoutDecorations(ValidationState_t&, const Instruction*,
 bool HasConflictingMemberOffsets(const std::set<Decoration>&,
                                  const std::set<Decoration>&);
 
-bool IsAllowedTypeOrArrayOfSame(ValidationState_t& _, const Instruction* type,
+bool IsAllowedTypeOrArrayOfSame(ValidationState_t& _, const Instruction& type,
                                 std::initializer_list<spv::Op> allowed) {
-  if (std::find(allowed.begin(), allowed.end(), type->opcode()) !=
+  if (std::find(allowed.begin(), allowed.end(), type.opcode()) !=
       allowed.end()) {
     return true;
   }
-  if (type->opcode() == spv::Op::OpTypeArray ||
-      type->opcode() == spv::Op::OpTypeRuntimeArray) {
-    auto elem_type = _.FindDef(type->word(2));
+  if (type.opcode() == spv::Op::OpTypeArray ||
+      type.opcode() == spv::Op::OpTypeRuntimeArray) {
+    auto elem_type = _.FindDef(type.word(2));
     return std::find(allowed.begin(), allowed.end(), elem_type->opcode()) !=
            allowed.end();
   }
@@ -196,75 +199,45 @@ bool ContainsInvalidBool(ValidationState_t& _, const Instruction* storage,
   return false;
 }
 
-bool ContainsCooperativeMatrix(ValidationState_t& _,
-                               const Instruction* storage) {
-  const size_t elem_type_index = 1;
-  uint32_t elem_type_id;
-  Instruction* elem_type;
-
-  switch (storage->opcode()) {
-    case spv::Op::OpTypeCooperativeMatrixNV:
-    case spv::Op::OpTypeCooperativeMatrixKHR:
-      return true;
-    case spv::Op::OpTypeArray:
-    case spv::Op::OpTypeRuntimeArray:
-      elem_type_id = storage->GetOperandAs<uint32_t>(elem_type_index);
-      elem_type = _.FindDef(elem_type_id);
-      return ContainsCooperativeMatrix(_, elem_type);
-    case spv::Op::OpTypeStruct:
-      for (size_t member_type_index = 1;
-           member_type_index < storage->operands().size();
-           ++member_type_index) {
-        auto member_type_id =
-            storage->GetOperandAs<uint32_t>(member_type_index);
-        auto member_type = _.FindDef(member_type_id);
-        if (ContainsCooperativeMatrix(_, member_type)) return true;
-      }
-      break;
-    default:
-      break;
-  }
-  return false;
-}
-
-std::pair<spv::StorageClass, spv::StorageClass> GetStorageClass(
-    ValidationState_t& _, const Instruction* inst) {
-  spv::StorageClass dst_sc = spv::StorageClass::Max;
-  spv::StorageClass src_sc = spv::StorageClass::Max;
+std::pair<Instruction*, Instruction*> GetPointerTypes(ValidationState_t& _,
+                                                      const Instruction* inst) {
+  Instruction* dst_pointer_type = nullptr;
+  Instruction* src_pointer_type = nullptr;
   switch (inst->opcode()) {
     case spv::Op::OpCooperativeMatrixLoadNV:
     case spv::Op::OpCooperativeMatrixLoadTensorNV:
     case spv::Op::OpCooperativeMatrixLoadKHR:
-    case spv::Op::OpLoad: {
+    case spv::Op::OpCooperativeVectorLoadNV:
+    case spv::Op::OpLoad:
+    case spv::Op::OpPredicatedLoadINTEL: {
       auto load_pointer = _.FindDef(inst->GetOperandAs<uint32_t>(2));
-      auto load_pointer_type = _.FindDef(load_pointer->type_id());
-      dst_sc = load_pointer_type->GetOperandAs<spv::StorageClass>(1);
+      dst_pointer_type = _.FindDef(load_pointer->type_id());
       break;
     }
     case spv::Op::OpCooperativeMatrixStoreNV:
     case spv::Op::OpCooperativeMatrixStoreTensorNV:
     case spv::Op::OpCooperativeMatrixStoreKHR:
-    case spv::Op::OpStore: {
+    case spv::Op::OpCooperativeVectorStoreNV:
+    case spv::Op::OpStore:
+    case spv::Op::OpPredicatedStoreINTEL: {
       auto store_pointer = _.FindDef(inst->GetOperandAs<uint32_t>(0));
-      auto store_pointer_type = _.FindDef(store_pointer->type_id());
-      dst_sc = store_pointer_type->GetOperandAs<spv::StorageClass>(1);
+      dst_pointer_type = _.FindDef(store_pointer->type_id());
       break;
     }
+    // Spec: "Matching Storage Class is not required"
     case spv::Op::OpCopyMemory:
     case spv::Op::OpCopyMemorySized: {
-      auto dst = _.FindDef(inst->GetOperandAs<uint32_t>(0));
-      auto dst_type = _.FindDef(dst->type_id());
-      dst_sc = dst_type->GetOperandAs<spv::StorageClass>(1);
-      auto src = _.FindDef(inst->GetOperandAs<uint32_t>(1));
-      auto src_type = _.FindDef(src->type_id());
-      src_sc = src_type->GetOperandAs<spv::StorageClass>(1);
+      auto dst_pointer = _.FindDef(inst->GetOperandAs<uint32_t>(0));
+      dst_pointer_type = _.FindDef(dst_pointer->type_id());
+      auto src_pointer = _.FindDef(inst->GetOperandAs<uint32_t>(1));
+      src_pointer_type = _.FindDef(src_pointer->type_id());
       break;
     }
     default:
       break;
   }
 
-  return std::make_pair(dst_sc, src_sc);
+  return std::make_pair(dst_pointer_type, src_pointer_type);
 }
 
 // Returns the number of instruction words taken up by a memory access
@@ -274,14 +247,17 @@ int MemoryAccessNumWords(uint32_t mask) {
   if (mask & uint32_t(spv::MemoryAccessMask::Aligned)) ++result;
   if (mask & uint32_t(spv::MemoryAccessMask::MakePointerAvailableKHR)) ++result;
   if (mask & uint32_t(spv::MemoryAccessMask::MakePointerVisibleKHR)) ++result;
+  if (mask & uint32_t(spv::MemoryAccessMask::AliasScopeINTELMask)) ++result;
+  if (mask & uint32_t(spv::MemoryAccessMask::NoAliasINTELMask)) ++result;
   return result;
 }
 
 // Returns the scope ID operand for MakeAvailable memory access with mask
 // at the given operand index.
 // This function is only called for OpLoad, OpStore, OpCopyMemory and
-// OpCopyMemorySized, OpCooperativeMatrixLoadNV, and
-// OpCooperativeMatrixStoreNV.
+// OpCopyMemorySized, OpCooperativeMatrixLoadNV,
+// OpCooperativeMatrixStoreNV, OpCooperativeVectorLoadNV,
+// OpCooperativeVectorStoreNV.
 uint32_t GetMakeAvailableScope(const Instruction* inst, uint32_t mask,
                                uint32_t mask_index) {
   assert(mask & uint32_t(spv::MemoryAccessMask::MakePointerAvailableKHR));
@@ -292,8 +268,9 @@ uint32_t GetMakeAvailableScope(const Instruction* inst, uint32_t mask,
 }
 
 // This function is only called for OpLoad, OpStore, OpCopyMemory,
-// OpCopyMemorySized, OpCooperativeMatrixLoadNV, and
-// OpCooperativeMatrixStoreNV.
+// OpCopyMemorySized, OpCooperativeMatrixLoadNV,
+// OpCooperativeMatrixStoreNV, OpCooperativeVectorLoadNV,
+// OpCooperativeVectorStoreNV.
 uint32_t GetMakeVisibleScope(const Instruction* inst, uint32_t mask,
                              uint32_t mask_index) {
   assert(mask & uint32_t(spv::MemoryAccessMask::MakePointerVisibleKHR));
@@ -315,8 +292,17 @@ bool DoesStructContainRTA(const ValidationState_t& _, const Instruction* inst) {
 
 spv_result_t CheckMemoryAccess(ValidationState_t& _, const Instruction* inst,
                                uint32_t index) {
-  spv::StorageClass dst_sc, src_sc;
-  std::tie(dst_sc, src_sc) = GetStorageClass(_, inst);
+  Instruction* dst_pointer_type = nullptr;
+  Instruction* src_pointer_type = nullptr;  // only used for OpCopyMemory
+  std::tie(dst_pointer_type, src_pointer_type) = GetPointerTypes(_, inst);
+
+  const spv::StorageClass dst_sc =
+      dst_pointer_type ? dst_pointer_type->GetOperandAs<spv::StorageClass>(1)
+                       : spv::StorageClass::Max;
+  const spv::StorageClass src_sc =
+      src_pointer_type ? src_pointer_type->GetOperandAs<spv::StorageClass>(1)
+                       : spv::StorageClass::Max;
+
   if (inst->operands().size() <= index) {
     // Cases where lack of some operand is invalid
     if (src_sc == spv::StorageClass::PhysicalStorageBuffer ||
@@ -333,7 +319,9 @@ spv_result_t CheckMemoryAccess(ValidationState_t& _, const Instruction* inst,
     if (inst->opcode() == spv::Op::OpLoad ||
         inst->opcode() == spv::Op::OpCooperativeMatrixLoadNV ||
         inst->opcode() == spv::Op::OpCooperativeMatrixLoadTensorNV ||
-        inst->opcode() == spv::Op::OpCooperativeMatrixLoadKHR) {
+        inst->opcode() == spv::Op::OpCooperativeMatrixLoadKHR ||
+        inst->opcode() == spv::Op::OpCooperativeVectorLoadNV ||
+        inst->opcode() == spv::Op::OpPredicatedLoadINTEL) {
       return _.diag(SPV_ERROR_INVALID_ID, inst)
              << "MakePointerAvailableKHR cannot be used with OpLoad.";
     }
@@ -354,7 +342,9 @@ spv_result_t CheckMemoryAccess(ValidationState_t& _, const Instruction* inst,
     if (inst->opcode() == spv::Op::OpStore ||
         inst->opcode() == spv::Op::OpCooperativeMatrixStoreNV ||
         inst->opcode() == spv::Op::OpCooperativeMatrixStoreKHR ||
-        inst->opcode() == spv::Op::OpCooperativeMatrixStoreTensorNV) {
+        inst->opcode() == spv::Op::OpCooperativeMatrixStoreTensorNV ||
+        inst->opcode() == spv::Op::OpCooperativeVectorStoreNV ||
+        inst->opcode() == spv::Op::OpPredicatedStoreINTEL) {
       return _.diag(SPV_ERROR_INVALID_ID, inst)
              << "MakePointerVisibleKHR cannot be used with OpStore.";
     }
@@ -405,74 +395,65 @@ spv_result_t CheckMemoryAccess(ValidationState_t& _, const Instruction* inst,
              << _.VkErrorID(4708)
              << "Memory accesses with PhysicalStorageBuffer must use Aligned.";
     }
+  } else {
+    // even if there are other masks, the Aligned operand will be next
+    const uint32_t aligned_value = inst->GetOperandAs<uint32_t>(index + 1);
+    const bool is_power_of_two =
+        aligned_value && !(aligned_value & (aligned_value - 1));
+    if (!is_power_of_two) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "Memory accesses Aligned operand value " << aligned_value
+             << " is not a power of two.";
+    }
+
+    uint32_t largest_scalar = 0;
+    if (dst_sc == spv::StorageClass::PhysicalStorageBuffer) {
+      if (dst_pointer_type->opcode() != spv::Op::OpTypeUntypedPointerKHR) {
+        largest_scalar =
+            _.GetLargestScalarType(dst_pointer_type->GetOperandAs<uint32_t>(2));
+      } else if (inst->type_id() != 0) {
+        largest_scalar = _.GetLargestScalarType(inst->type_id());
+      } else {
+        // TODO need to handle cases like OpStore and OpCopyMemorySized which
+        // don't have a result type
+      }
+    }
+    // TODO - Handle Untyped in OpCopyMemory
+    if (src_sc == spv::StorageClass::PhysicalStorageBuffer &&
+        src_pointer_type->opcode() != spv::Op::OpTypeUntypedPointerKHR) {
+      largest_scalar = std::max(
+          largest_scalar,
+          _.GetLargestScalarType(src_pointer_type->GetOperandAs<uint32_t>(2)));
+    }
+    if (aligned_value < largest_scalar) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << _.VkErrorID(6314) << "Memory accesses Aligned operand value "
+             << aligned_value << " is too small, the largest scalar type is "
+             << largest_scalar << " bytes.";
+    }
   }
 
   return SPV_SUCCESS;
 }
 
-spv_result_t ValidateVariable(ValidationState_t& _, const Instruction* inst) {
+spv_result_t ValidateVariableInitializer(ValidationState_t& _,
+                                         const Instruction* inst,
+                                         spv::StorageClass storage_class,
+                                         uint32_t value_id) {
   const bool untyped_pointer = inst->opcode() == spv::Op::OpUntypedVariableKHR;
-
-  auto result_type = _.FindDef(inst->type_id());
-  if (untyped_pointer) {
-    if (!result_type ||
-        result_type->opcode() != spv::Op::OpTypeUntypedPointerKHR)
-      return _.diag(SPV_ERROR_INVALID_ID, inst)
-             << "Result type must be an untyped pointer";
-  } else {
-    if (!result_type || result_type->opcode() != spv::Op::OpTypePointer) {
-      return _.diag(SPV_ERROR_INVALID_ID, inst)
-             << "OpVariable Result Type <id> " << _.getIdName(inst->type_id())
-             << " is not a pointer type.";
-    }
-  }
-
-  const auto storage_class_index = 2u;
-  auto storage_class =
-      inst->GetOperandAs<spv::StorageClass>(storage_class_index);
-  uint32_t value_id = 0;
-  if (untyped_pointer) {
-    const auto has_data_type = 3u < inst->operands().size();
-    if (has_data_type) {
-      value_id = inst->GetOperandAs<uint32_t>(3u);
-      auto data_type = _.FindDef(value_id);
-      if (!data_type || !spvOpcodeGeneratesType(data_type->opcode())) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << "Data type must be a type instruction";
-      }
-    } else {
-      if (storage_class == spv::StorageClass::Function ||
-          storage_class == spv::StorageClass::Private ||
-          storage_class == spv::StorageClass::Workgroup) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << "Data type must be specified for Function, Private, and "
-                  "Workgroup storage classes";
-      }
-      if (spvIsVulkanEnv(_.context()->target_env)) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << "Vulkan requires that data type be specified";
-      }
-    }
-  }
-
-  // For OpVariable the data type comes from pointee type of the result type,
-  // while for OpUntypedVariableKHR the data type comes from the operand.
-  if (!untyped_pointer) {
-    value_id = result_type->GetOperandAs<uint32_t>(2);
-  }
-  auto value_type = value_id == 0 ? nullptr : _.FindDef(value_id);
-
-  const auto initializer_index = untyped_pointer ? 4u : 3u;
+  const uint32_t initializer_index = untyped_pointer ? 4u : 3u;
   if (initializer_index < inst->operands().size()) {
-    const auto initializer_id = inst->GetOperandAs<uint32_t>(initializer_index);
-    const auto initializer = _.FindDef(initializer_id);
-    const auto is_module_scope_var =
+    const uint32_t initializer_id =
+        inst->GetOperandAs<uint32_t>(initializer_index);
+    const Instruction* initializer = _.FindDef(initializer_id);
+    const uint32_t storage_class_index = 2u;
+    const bool is_module_scope_var =
         initializer &&
         (initializer->opcode() == spv::Op::OpVariable ||
          initializer->opcode() == spv::Op::OpUntypedVariableKHR) &&
         (initializer->GetOperandAs<spv::StorageClass>(storage_class_index) !=
          spv::StorageClass::Function);
-    const auto is_constant =
+    const bool is_constant =
         initializer && spvOpcodeIsConstant(initializer->opcode());
     if (!initializer || !(is_constant || is_module_scope_var)) {
       return _.diag(SPV_ERROR_INVALID_ID, inst)
@@ -482,188 +463,6 @@ spv_result_t ValidateVariable(ValidationState_t& _, const Instruction* inst) {
     if (initializer->type_id() != value_id) {
       return _.diag(SPV_ERROR_INVALID_ID, inst)
              << "Initializer type must match the data type";
-    }
-  }
-
-  if (storage_class != spv::StorageClass::Workgroup &&
-      storage_class != spv::StorageClass::CrossWorkgroup &&
-      storage_class != spv::StorageClass::Private &&
-      storage_class != spv::StorageClass::Function &&
-      storage_class != spv::StorageClass::UniformConstant &&
-      storage_class != spv::StorageClass::RayPayloadKHR &&
-      storage_class != spv::StorageClass::IncomingRayPayloadKHR &&
-      storage_class != spv::StorageClass::HitAttributeKHR &&
-      storage_class != spv::StorageClass::CallableDataKHR &&
-      storage_class != spv::StorageClass::IncomingCallableDataKHR &&
-      storage_class != spv::StorageClass::TaskPayloadWorkgroupEXT &&
-      storage_class != spv::StorageClass::HitObjectAttributeNV) {
-    bool storage_input_or_output = storage_class == spv::StorageClass::Input ||
-                                   storage_class == spv::StorageClass::Output;
-    bool builtin = false;
-    if (storage_input_or_output) {
-      for (const Decoration& decoration : _.id_decorations(inst->id())) {
-        if (decoration.dec_type() == spv::Decoration::BuiltIn) {
-          builtin = true;
-          break;
-        }
-      }
-    }
-    if (!builtin && value_type &&
-        ContainsInvalidBool(_, value_type, storage_input_or_output)) {
-      if (storage_input_or_output) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << _.VkErrorID(7290)
-               << "If OpTypeBool is stored in conjunction with OpVariable "
-                  "using Input or Output Storage Classes it requires a BuiltIn "
-                  "decoration";
-
-      } else {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << "If OpTypeBool is stored in conjunction with OpVariable, it "
-                  "can only be used with non-externally visible shader Storage "
-                  "Classes: Workgroup, CrossWorkgroup, Private, Function, "
-                  "Input, Output, RayPayloadKHR, IncomingRayPayloadKHR, "
-                  "HitAttributeKHR, CallableDataKHR, "
-                  "IncomingCallableDataKHR, or UniformConstant";
-      }
-    }
-  }
-
-  if (!_.IsValidStorageClass(storage_class)) {
-    return _.diag(SPV_ERROR_INVALID_BINARY, inst)
-           << _.VkErrorID(4643)
-           << "Invalid storage class for target environment";
-  }
-
-  if (storage_class == spv::StorageClass::Generic) {
-    return _.diag(SPV_ERROR_INVALID_BINARY, inst)
-           << "Variable storage class cannot be Generic";
-  }
-
-  if (inst->function() && storage_class != spv::StorageClass::Function) {
-    return _.diag(SPV_ERROR_INVALID_LAYOUT, inst)
-           << "Variables must have a function[7] storage class inside"
-              " of a function";
-  }
-
-  if (!inst->function() && storage_class == spv::StorageClass::Function) {
-    return _.diag(SPV_ERROR_INVALID_LAYOUT, inst)
-           << "Variables can not have a function[7] storage class "
-              "outside of a function";
-  }
-
-  // SPIR-V 3.32.8: Check that pointer type and variable type have the same
-  // storage class.
-  const auto result_storage_class_index = 1;
-  const auto result_storage_class =
-      result_type->GetOperandAs<spv::StorageClass>(result_storage_class_index);
-  if (storage_class != result_storage_class) {
-    return _.diag(SPV_ERROR_INVALID_ID, inst)
-           << "Storage class must match result type storage class";
-  }
-
-  // Variable pointer related restrictions.
-  const auto pointee = untyped_pointer
-                           ? value_id == 0 ? nullptr : _.FindDef(value_id)
-                           : _.FindDef(result_type->word(3));
-  if (_.addressing_model() == spv::AddressingModel::Logical &&
-      !_.options()->relax_logical_pointer) {
-    // VariablePointersStorageBuffer is implied by VariablePointers.
-    if (pointee && pointee->opcode() == spv::Op::OpTypePointer) {
-      if (!_.HasCapability(spv::Capability::VariablePointersStorageBuffer)) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << "In Logical addressing, variables may not allocate a pointer "
-               << "type";
-      } else if (storage_class != spv::StorageClass::Function &&
-                 storage_class != spv::StorageClass::Private) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << "In Logical addressing with variable pointers, variables "
-               << "that allocate pointers must be in Function or Private "
-               << "storage classes";
-      }
-    }
-  }
-
-  if (spvIsVulkanEnv(_.context()->target_env)) {
-    // Vulkan Push Constant Interface section: Check type of PushConstant
-    // variables.
-    if (storage_class == spv::StorageClass::PushConstant) {
-      if (pointee && pointee->opcode() != spv::Op::OpTypeStruct) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << _.VkErrorID(6808) << "PushConstant OpVariable <id> "
-               << _.getIdName(inst->id()) << " has illegal type.\n"
-               << "From Vulkan spec, Push Constant Interface section:\n"
-               << "Such variables must be typed as OpTypeStruct";
-      }
-    }
-
-    // Vulkan Descriptor Set Interface: Check type of UniformConstant and
-    // Uniform variables.
-    if (storage_class == spv::StorageClass::UniformConstant) {
-      if (pointee && !IsAllowedTypeOrArrayOfSame(
-                         _, pointee,
-                         {spv::Op::OpTypeImage, spv::Op::OpTypeSampler,
-                          spv::Op::OpTypeSampledImage,
-                          spv::Op::OpTypeAccelerationStructureKHR})) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << _.VkErrorID(4655) << "UniformConstant OpVariable <id> "
-               << _.getIdName(inst->id()) << " has illegal type.\n"
-               << "Variables identified with the UniformConstant storage class "
-               << "are used only as handles to refer to opaque resources. Such "
-               << "variables must be typed as OpTypeImage, OpTypeSampler, "
-               << "OpTypeSampledImage, OpTypeAccelerationStructureKHR, "
-               << "or an array of one of these types.";
-      }
-    }
-
-    if (storage_class == spv::StorageClass::Uniform) {
-      if (pointee &&
-          !IsAllowedTypeOrArrayOfSame(_, pointee, {spv::Op::OpTypeStruct})) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << _.VkErrorID(6807) << "Uniform OpVariable <id> "
-               << _.getIdName(inst->id()) << " has illegal type.\n"
-               << "From Vulkan spec:\n"
-               << "Variables identified with the Uniform storage class are "
-               << "used to access transparent buffer backed resources. Such "
-               << "variables must be typed as OpTypeStruct, or an array of "
-               << "this type";
-      }
-    }
-
-    if (storage_class == spv::StorageClass::StorageBuffer) {
-      if (pointee &&
-          !IsAllowedTypeOrArrayOfSame(_, pointee, {spv::Op::OpTypeStruct})) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << _.VkErrorID(6807) << "StorageBuffer OpVariable <id> "
-               << _.getIdName(inst->id()) << " has illegal type.\n"
-               << "From Vulkan spec:\n"
-               << "Variables identified with the StorageBuffer storage class "
-                  "are used to access transparent buffer backed resources. "
-                  "Such variables must be typed as OpTypeStruct, or an array "
-                  "of this type";
-      }
-    }
-
-    // Check for invalid use of Invariant
-    if (storage_class != spv::StorageClass::Input &&
-        storage_class != spv::StorageClass::Output) {
-      if (_.HasDecoration(inst->id(), spv::Decoration::Invariant)) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << _.VkErrorID(4677)
-               << "Variable decorated with Invariant must only be identified "
-                  "with the Input or Output storage class in Vulkan "
-                  "environment.";
-      }
-      // Need to check if only the members in a struct are decorated
-      if (value_type && value_type->opcode() == spv::Op::OpTypeStruct) {
-        if (_.HasDecoration(value_id, spv::Decoration::Invariant)) {
-          return _.diag(SPV_ERROR_INVALID_ID, inst)
-                 << _.VkErrorID(4677)
-                 << "Variable struct member decorated with Invariant must only "
-                    "be identified with the Input or Output storage class in "
-                    "Vulkan environment.";
-        }
-      }
     }
   }
 
@@ -718,6 +517,99 @@ spv_result_t ValidateVariable(ValidationState_t& _, const Instruction* inst) {
              << "OpVariable, <id> " << _.getIdName(inst->id())
              << ", initializer are not allowed for HitObjectAttributeNV";
     }
+    if (storage_class == spv::StorageClass::HitObjectAttributeEXT) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "OpVariable, <id> " << _.getIdName(inst->id())
+             << ", initializer are not allowed for HitObjectAttributeEXT";
+    }
+  }
+
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateVariableStorageClass(ValidationState_t& _,
+                                          const Instruction* inst,
+                                          spv::StorageClass storage_class,
+                                          const Instruction* value_type) {
+  if (storage_class != spv::StorageClass::Workgroup &&
+      storage_class != spv::StorageClass::CrossWorkgroup &&
+      storage_class != spv::StorageClass::Private &&
+      storage_class != spv::StorageClass::Function &&
+      storage_class != spv::StorageClass::UniformConstant &&
+      storage_class != spv::StorageClass::RayPayloadKHR &&
+      storage_class != spv::StorageClass::IncomingRayPayloadKHR &&
+      storage_class != spv::StorageClass::HitAttributeKHR &&
+      storage_class != spv::StorageClass::CallableDataKHR &&
+      storage_class != spv::StorageClass::IncomingCallableDataKHR &&
+      storage_class != spv::StorageClass::TaskPayloadWorkgroupEXT &&
+      storage_class != spv::StorageClass::HitObjectAttributeNV &&
+      storage_class != spv::StorageClass::HitObjectAttributeEXT &&
+      storage_class != spv::StorageClass::NodePayloadAMDX) {
+    bool storage_input_or_output = storage_class == spv::StorageClass::Input ||
+                                   storage_class == spv::StorageClass::Output;
+    bool builtin = false;
+    if (storage_input_or_output) {
+      for (const Decoration& decoration : _.id_decorations(inst->id())) {
+        if (decoration.dec_type() == spv::Decoration::BuiltIn) {
+          builtin = true;
+          break;
+        }
+      }
+    }
+    if (!builtin && value_type &&
+        ContainsInvalidBool(_, value_type, storage_input_or_output)) {
+      if (storage_input_or_output) {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << _.VkErrorID(7290)
+               << "If OpTypeBool is stored in conjunction with OpVariable "
+                  "using Input or Output Storage Classes it requires a BuiltIn "
+                  "decoration";
+
+      } else {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << "If OpTypeBool is stored in conjunction with OpVariable, it "
+                  "can only be used with non-externally visible shader Storage "
+                  "Classes: Workgroup, CrossWorkgroup, Private, Function, "
+                  "Input, Output, RayPayloadKHR, IncomingRayPayloadKHR, "
+                  "HitAttributeKHR, CallableDataKHR, "
+                  "IncomingCallableDataKHR, NodePayloadAMDX, or "
+                  "UniformConstant";
+      }
+    }
+  }
+
+  if (!_.IsValidStorageClass(storage_class)) {
+    return _.diag(SPV_ERROR_INVALID_BINARY, inst)
+           << _.VkErrorID(4643)
+           << "Invalid storage class for target environment";
+  }
+
+  if (storage_class == spv::StorageClass::Generic) {
+    return _.diag(SPV_ERROR_INVALID_BINARY, inst)
+           << "Variable storage class cannot be Generic";
+  }
+
+  if (inst->function() && storage_class != spv::StorageClass::Function) {
+    return _.diag(SPV_ERROR_INVALID_LAYOUT, inst)
+           << "Variables must have a function[7] storage class inside"
+              " of a function";
+  }
+
+  if (!inst->function() && storage_class == spv::StorageClass::Function) {
+    return _.diag(SPV_ERROR_INVALID_LAYOUT, inst)
+           << "Variables can not have a function[7] storage class "
+              "outside of a function";
+  }
+
+  // SPIR-V 3.32.8: Check that pointer type and variable type have the same
+  // storage class.
+  auto result_type = _.FindDef(inst->type_id());
+  const auto result_storage_class_index = 1;
+  const auto result_storage_class =
+      result_type->GetOperandAs<spv::StorageClass>(result_storage_class_index);
+  if (storage_class != result_storage_class) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "Storage class must match result type storage class";
   }
 
   if (storage_class == spv::StorageClass::PhysicalStorageBuffer) {
@@ -725,101 +617,185 @@ spv_result_t ValidateVariable(ValidationState_t& _, const Instruction* inst) {
            << "PhysicalStorageBuffer must not be used with OpVariable.";
   }
 
-  auto pointee_base = pointee;
-  while (pointee_base && pointee_base->opcode() == spv::Op::OpTypeArray) {
-    pointee_base = _.FindDef(pointee_base->GetOperandAs<uint32_t>(1u));
+  if (storage_class == spv::StorageClass::TileAttachmentQCOM &&
+      !_.HasCapability(spv::Capability::TileShadingQCOM)) {
+    return _.diag(SPV_ERROR_INVALID_CAPABILITY, inst)
+           << _.VkErrorID(10689)
+           << "the TileAttachmentQCOM storage class variable requires "
+              "TileShadingQCOM capability enabled.";
   }
-  if (pointee_base && pointee_base->opcode() == spv::Op::OpTypePointer) {
-    if (pointee_base->GetOperandAs<spv::StorageClass>(1u) ==
-        spv::StorageClass::PhysicalStorageBuffer) {
-      // check for AliasedPointer/RestrictPointer
-      bool foundAliased =
-          _.HasDecoration(inst->id(), spv::Decoration::AliasedPointer);
-      bool foundRestrict =
-          _.HasDecoration(inst->id(), spv::Decoration::RestrictPointer);
-      if (!foundAliased && !foundRestrict) {
+
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateVariablePointer(ValidationState_t& _,
+                                     const Instruction* inst,
+                                     spv::StorageClass storage_class,
+                                     const Instruction& pointee) {
+  if ((_.addressing_model() == spv::AddressingModel::Logical ||
+       _.addressing_model() == spv::AddressingModel::PhysicalStorageBuffer64) &&
+      !_.options()->relax_logical_pointer) {
+    spv_result_t error = SPV_SUCCESS;
+    bool contains_logical_pointer = _.ContainsType(
+        pointee.id(),
+        [&_, inst, &error](const Instruction* type) {
+          if (type->opcode() == spv::Op::OpTypePointer ||
+              type->opcode() == spv::Op::OpTypeUntypedPointerKHR) {
+            const auto sc = type->GetOperandAs<spv::StorageClass>(1u);
+            if (sc != spv::StorageClass::PhysicalStorageBuffer) {
+              if (sc != spv::StorageClass::StorageBuffer &&
+                  sc != spv::StorageClass::Workgroup) {
+                error =
+                    _.diag(SPV_ERROR_INVALID_ID, inst)
+                    << "In Logical addressing, variables can only allocate a "
+                       "pointer to the StorageBuffer or Workgroup storage "
+                       "classes";
+              } else if (!_.HasCapability(
+                             spv::Capability::VariablePointersStorageBuffer) &&
+                         sc == spv::StorageClass::StorageBuffer) {
+                error =
+                    _.diag(SPV_ERROR_INVALID_ID, inst)
+                    << "In Logical addressing, variables can only allocate a "
+                       "storage buffer pointer if the "
+                       "VariablePointersStorageBuffer capability is declared";
+              } else if (!_.HasCapability(spv::Capability::VariablePointers) &&
+                         sc == spv::StorageClass::Workgroup) {
+                error =
+                    _.diag(SPV_ERROR_INVALID_ID, inst)
+                    << "In Logical addressing, variables can only allocate a "
+                       "workgroup pointer if the VariablePointers capability "
+                       "is "
+                       "declared";
+              }
+              return true;
+            }
+          }
+          return false;
+        },
+        /* traverse_all_types = */ false);
+
+    if (error != SPV_SUCCESS) return error;
+
+    if (contains_logical_pointer) {
+      if (storage_class != spv::StorageClass::Function &&
+          storage_class != spv::StorageClass::Private) {
         return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << "OpVariable " << inst->id()
-               << ": expected AliasedPointer or RestrictPointer for "
-               << "PhysicalStorageBuffer pointer.";
-      }
-      if (foundAliased && foundRestrict) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << "OpVariable " << inst->id()
-               << ": can't specify both AliasedPointer and "
-               << "RestrictPointer for PhysicalStorageBuffer pointer.";
+               << "In Logical addressing with variable pointers, variables "
+               << "that allocate pointers must be in Function or Private "
+               << "storage classes";
       }
     }
   }
 
-  // Vulkan specific validation rules for OpTypeRuntimeArray
-  if (spvIsVulkanEnv(_.context()->target_env)) {
-    // OpTypeRuntimeArray should only ever be in a container like OpTypeStruct,
-    // so should never appear as a bare variable.
-    // Unless the module has the RuntimeDescriptorArrayEXT capability.
-    if (value_type && value_type->opcode() == spv::Op::OpTypeRuntimeArray) {
-      if (!_.HasCapability(spv::Capability::RuntimeDescriptorArrayEXT)) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << _.VkErrorID(4680) << "OpVariable, <id> "
-               << _.getIdName(inst->id())
-               << ", is attempting to create memory for an illegal type, "
-               << "OpTypeRuntimeArray.\nFor Vulkan OpTypeRuntimeArray can only "
-               << "appear as the final member of an OpTypeStruct, thus cannot "
-               << "be instantiated via OpVariable";
-      } else {
-        // A bare variable OpTypeRuntimeArray is allowed in this context, but
-        // still need to check the storage class.
-        if (storage_class != spv::StorageClass::StorageBuffer &&
-            storage_class != spv::StorageClass::Uniform &&
-            storage_class != spv::StorageClass::UniformConstant) {
-          return _.diag(SPV_ERROR_INVALID_ID, inst)
-                 << _.VkErrorID(4680)
-                 << "For Vulkan with RuntimeDescriptorArrayEXT, a variable "
-                 << "containing OpTypeRuntimeArray must have storage class of "
-                 << "StorageBuffer, Uniform, or UniformConstant.";
-        }
-      }
-    }
+  return SPV_SUCCESS;
+}
 
-    // If an OpStruct has an OpTypeRuntimeArray somewhere within it, then it
-    // must either have the storage class StorageBuffer and be decorated
-    // with Block, or it must be in the Uniform storage class and be decorated
-    // as BufferBlock.
+spv_result_t ValidateVariableVulkanDescriptor(ValidationState_t& _,
+                                              const Instruction* inst,
+                                              spv::StorageClass storage_class,
+                                              const Instruction& pointee) {
+  // Vulkan Push Constant Interface section: Check type of PushConstant
+  // variables.
+  if (storage_class == spv::StorageClass::PushConstant) {
+    if (pointee.opcode() != spv::Op::OpTypeStruct) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << _.VkErrorID(6808) << "PushConstant OpVariable <id> "
+             << _.getIdName(inst->id()) << " has illegal type.\n"
+             << "From Vulkan spec, Push Constant Interface section:\n"
+             << "Such variables must be typed as OpTypeStruct";
+    }
+  }
+
+  // Vulkan Descriptor Set Interface: Check type of UniformConstant and
+  // Uniform variables.
+  if (storage_class == spv::StorageClass::UniformConstant) {
+    if (!IsAllowedTypeOrArrayOfSame(
+            _, pointee,
+            {spv::Op::OpTypeImage, spv::Op::OpTypeSampler,
+             spv::Op::OpTypeSampledImage, spv::Op::OpTypeTensorARM,
+             spv::Op::OpTypeAccelerationStructureKHR})) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << _.VkErrorID(4655) << "UniformConstant OpVariable <id> "
+             << _.getIdName(inst->id()) << " has illegal type.\n"
+             << "Variables identified with the UniformConstant storage class "
+             << "are used only as handles to refer to opaque resources. Such "
+             << "variables must be typed as OpTypeImage, OpTypeSampler, "
+             << "OpTypeSampledImage, OpTypeAccelerationStructureKHR, "
+             << "or an array of one of these types.";
+    }
+  }
+
+  if (storage_class == spv::StorageClass::Uniform) {
+    if (!IsAllowedTypeOrArrayOfSame(_, pointee, {spv::Op::OpTypeStruct})) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << _.VkErrorID(6807) << "Uniform OpVariable <id> "
+             << _.getIdName(inst->id()) << " has illegal type.\n"
+             << "From Vulkan spec:\n"
+             << "Variables identified with the Uniform storage class are "
+             << "used to access transparent buffer backed resources. Such "
+             << "variables must be typed as OpTypeStruct, or an array of "
+             << "this type";
+    }
+  }
+
+  if (storage_class == spv::StorageClass::StorageBuffer) {
+    if (!IsAllowedTypeOrArrayOfSame(_, pointee, {spv::Op::OpTypeStruct})) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << _.VkErrorID(6807) << "StorageBuffer OpVariable <id> "
+             << _.getIdName(inst->id()) << " has illegal type.\n"
+             << "From Vulkan spec:\n"
+             << "Variables identified with the StorageBuffer storage class "
+                "are used to access transparent buffer backed resources. "
+                "Such variables must be typed as OpTypeStruct, or an array "
+                "of this type";
+    }
+  }
+
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateVariableVulkanInterface(ValidationState_t& _,
+                                             const Instruction* inst,
+                                             spv::StorageClass storage_class,
+                                             const Instruction* value_type,
+                                             uint32_t value_id) {
+  // Check for invalid use of Invariant
+  if (storage_class != spv::StorageClass::Input &&
+      storage_class != spv::StorageClass::Output) {
+    if (_.HasDecoration(inst->id(), spv::Decoration::Invariant)) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << _.VkErrorID(4677)
+             << "Variable decorated with Invariant must only be identified "
+                "with the Input or Output storage class in Vulkan "
+                "environment.";
+    }
+    // Need to check if only the members in a struct are decorated
     if (value_type && value_type->opcode() == spv::Op::OpTypeStruct) {
-      if (DoesStructContainRTA(_, value_type)) {
-        if (storage_class == spv::StorageClass::StorageBuffer ||
-            storage_class == spv::StorageClass::PhysicalStorageBuffer) {
-          if (!_.HasDecoration(value_id, spv::Decoration::Block)) {
-            return _.diag(SPV_ERROR_INVALID_ID, inst)
-                   << _.VkErrorID(4680)
-                   << "For Vulkan, an OpTypeStruct variable containing an "
-                   << "OpTypeRuntimeArray must be decorated with Block if it "
-                   << "has storage class StorageBuffer or "
-                      "PhysicalStorageBuffer.";
-          }
-        } else if (storage_class == spv::StorageClass::Uniform) {
-          if (!_.HasDecoration(value_id, spv::Decoration::BufferBlock)) {
-            return _.diag(SPV_ERROR_INVALID_ID, inst)
-                   << _.VkErrorID(4680)
-                   << "For Vulkan, an OpTypeStruct variable containing an "
-                   << "OpTypeRuntimeArray must be decorated with BufferBlock "
-                   << "if it has storage class Uniform.";
-          }
-        } else {
-          return _.diag(SPV_ERROR_INVALID_ID, inst)
-                 << _.VkErrorID(4680)
-                 << "For Vulkan, OpTypeStruct variables containing "
-                 << "OpTypeRuntimeArray must have storage class of "
-                 << "StorageBuffer, PhysicalStorageBuffer, or Uniform.";
-        }
+      if (_.HasDecoration(value_id, spv::Decoration::Invariant)) {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << _.VkErrorID(4677)
+               << "Variable struct member decorated with Invariant must only "
+                  "be identified with the Input or Output storage class in "
+                  "Vulkan environment.";
       }
     }
   }
 
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateVariableCoopMat(ValidationState_t& _,
+                                     const Instruction* inst,
+                                     spv::StorageClass storage_class,
+                                     const Instruction& pointee) {
   // Cooperative matrix types can only be allocated in Function or Private
   if ((storage_class != spv::StorageClass::Function &&
        storage_class != spv::StorageClass::Private) &&
-      pointee && ContainsCooperativeMatrix(_, pointee)) {
+      _.ContainsType(pointee.id(), [](const Instruction* type_inst) {
+        auto opcode = type_inst->opcode();
+        return opcode == spv::Op::OpTypeCooperativeMatrixNV ||
+               opcode == spv::Op::OpTypeCooperativeMatrixKHR;
+      })) {
     return _.diag(SPV_ERROR_INVALID_ID, inst)
            << "Cooperative matrix types (or types containing them) can only be "
               "allocated "
@@ -827,135 +803,521 @@ spv_result_t ValidateVariable(ValidationState_t& _, const Instruction* inst) {
               "parameters";
   }
 
+  return SPV_SUCCESS;
+}
+
+// Vulkan specific validation rules for OpTypeRuntimeArray
+spv_result_t ValidateVariableVulkanArray(ValidationState_t& _,
+                                         const Instruction* inst,
+                                         spv::StorageClass storage_class,
+                                         const Instruction& value_type,
+                                         uint32_t value_id) {
+  // OpTypeRuntimeArray should only ever be in a container like OpTypeStruct,
+  // so should never appear as a bare variable.
+  // Unless the module has the RuntimeDescriptorArray capability.
+  if (value_type.opcode() == spv::Op::OpTypeRuntimeArray) {
+    if (!_.HasCapability(spv::Capability::RuntimeDescriptorArray)) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << _.VkErrorID(4680) << "OpVariable, <id> "
+             << _.getIdName(inst->id())
+             << ", is attempting to create memory for an illegal type, "
+             << "OpTypeRuntimeArray.\nFor Vulkan OpTypeRuntimeArray can only "
+             << "appear as the final member of an OpTypeStruct, thus cannot "
+             << "be instantiated via OpVariable, unless the "
+                "RuntimeDescriptorArray Capability is declared";
+    } else {
+      // A bare variable OpTypeRuntimeArray is allowed in this context, but
+      // still need to check the storage class.
+      if (storage_class != spv::StorageClass::StorageBuffer &&
+          storage_class != spv::StorageClass::Uniform &&
+          storage_class != spv::StorageClass::UniformConstant) {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << _.VkErrorID(4680)
+               << "For Vulkan with RuntimeDescriptorArray, a variable "
+               << "containing OpTypeRuntimeArray must have storage class of "
+               << "StorageBuffer, Uniform, or UniformConstant.";
+      }
+    }
+  }
+
+  // If an OpStruct has an OpTypeRuntimeArray somewhere within it, then it
+  // must either have the storage class StorageBuffer and be decorated
+  // with Block, or it must be in the Uniform storage class
+  if (value_type.opcode() == spv::Op::OpTypeStruct) {
+    if (DoesStructContainRTA(_, &value_type)) {
+      if (storage_class == spv::StorageClass::StorageBuffer ||
+          storage_class == spv::StorageClass::PhysicalStorageBuffer) {
+        if (!_.HasDecoration(value_id, spv::Decoration::Block)) {
+          return _.diag(SPV_ERROR_INVALID_ID, inst)
+                 << _.VkErrorID(4680)
+                 << "For Vulkan, an OpTypeStruct variable containing an "
+                 << "OpTypeRuntimeArray must be decorated with Block if it "
+                 << "has storage class StorageBuffer or "
+                    "PhysicalStorageBuffer.";
+        }
+      } else if (storage_class == spv::StorageClass::Uniform) {
+        // BufferBlock Uniform were always allowed.
+        //
+        // Block Uniform use to be invalid, but Vulkan added
+        // VK_EXT_shader_uniform_buffer_unsized_array and now this is
+        // validated at runtime
+        //
+        // The uniform must have either the Block or BufferBlock decoration
+        // (see VUID-StandaloneSpirv-Uniform-06676)
+      } else {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << _.VkErrorID(4680)
+               << "For Vulkan, OpTypeStruct variables containing "
+               << "OpTypeRuntimeArray must have storage class of "
+               << "StorageBuffer, PhysicalStorageBuffer, or Uniform.";
+      }
+    }
+  }
+
+  return SPV_SUCCESS;
+}
+
+// Vulkan-specific validation for long vectors
+spv_result_t ValidateVariableVulkanLongVector(ValidationState_t& _,
+                                              const Instruction* inst,
+                                              spv::StorageClass storage_class,
+                                              const Instruction& pointee) {
+  if (_.HasCapability(spv::Capability::LongVectorEXT)) {
+    if ((storage_class != spv::StorageClass::Function &&
+         storage_class != spv::StorageClass::Private &&
+         storage_class != spv::StorageClass::StorageBuffer &&
+         storage_class != spv::StorageClass::PhysicalStorageBuffer &&
+         storage_class != spv::StorageClass::Workgroup &&
+         storage_class != spv::StorageClass::Uniform &&
+         storage_class != spv::StorageClass::PushConstant &&
+         storage_class != spv::StorageClass::ShaderRecordBufferKHR) &&
+        _.ContainsType(pointee.id(), [&](const Instruction* type_inst) {
+          auto opcode = type_inst->opcode();
+          if (opcode == spv::Op::OpTypeVector ||
+              opcode == spv::Op::OpTypeVectorIdEXT) {
+            uint32_t dim = _.GetDimension(type_inst->id());
+            return dim > 4;
+          }
+          return false;
+        })) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << _.VkErrorID(12297)
+             << "Long vector types with more than 4 components (or types "
+                "containing them) not supported in storage class "
+             << StorageClassToString(storage_class);
+    }
+
+    if ((storage_class == spv::StorageClass::StorageBuffer ||
+         storage_class == spv::StorageClass::PhysicalStorageBuffer ||
+         storage_class == spv::StorageClass::Uniform ||
+         storage_class == spv::StorageClass::PushConstant ||
+         storage_class == spv::StorageClass::ShaderRecordBufferKHR ||
+         (storage_class == spv::StorageClass::Workgroup &&
+          _.HasDecoration(pointee.id(), spv::Decoration::Block))) &&
+        _.ContainsType(pointee.id(), [&](const Instruction* type_inst) {
+          auto opcode = type_inst->opcode();
+          if (opcode == spv::Op::OpTypeVectorIdEXT) {
+            auto component_count =
+                _.FindDef(type_inst->GetOperandAs<uint32_t>(2u));
+            return (bool)spvOpcodeIsSpecConstant(component_count->opcode());
+          }
+          return false;
+        })) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << _.VkErrorID(12294)
+             << "Long vector types with spec constant component count "
+                "not supported in storage class with explicit layout "
+             << StorageClassToString(storage_class);
+    }
+  } else {
+    if ((storage_class != spv::StorageClass::Function &&
+         storage_class != spv::StorageClass::Private) &&
+        _.ContainsType(pointee.id(), [](const Instruction* type_inst) {
+          auto opcode = type_inst->opcode();
+          return opcode == spv::Op::OpTypeVectorIdEXT;
+        })) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "Cooperative vector types (or types containing them) can "
+                "only be "
+                "allocated "
+             << "in Function or Private storage classes or as function "
+                "parameters";
+    }
+  }
+
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateVariableShader(ValidationState_t& _,
+                                    const Instruction* inst,
+                                    spv::StorageClass storage_class,
+                                    const Instruction* value_type,
+                                    uint32_t value_id) {
+  // Don't allow variables containing 16-bit elements without the appropriate
+  // capabilities.
+  if ((!_.HasCapability(spv::Capability::Int16) &&
+       _.ContainsSizedIntOrFloatType(value_id, spv::Op::OpTypeInt, 16)) ||
+      (!_.HasCapability(spv::Capability::Float16) &&
+       _.ContainsSizedIntOrFloatType(value_id, spv::Op::OpTypeFloat, 16))) {
+    auto underlying_type = value_type;
+    while (underlying_type &&
+           underlying_type->opcode() == spv::Op::OpTypePointer) {
+      storage_class = underlying_type->GetOperandAs<spv::StorageClass>(1u);
+      underlying_type = _.FindDef(underlying_type->GetOperandAs<uint32_t>(2u));
+    }
+    bool storage_class_ok = true;
+    std::string sc_name = _.grammar().lookupOperandName(
+        SPV_OPERAND_TYPE_STORAGE_CLASS, uint32_t(storage_class));
+    switch (storage_class) {
+      case spv::StorageClass::StorageBuffer:
+      case spv::StorageClass::PhysicalStorageBuffer:
+        if (!_.HasCapability(spv::Capability::StorageBuffer16BitAccess)) {
+          storage_class_ok = false;
+        }
+        break;
+      case spv::StorageClass::Uniform:
+        if (underlying_type &&
+            !_.HasCapability(
+                spv::Capability::UniformAndStorageBuffer16BitAccess)) {
+          if (underlying_type->opcode() == spv::Op::OpTypeArray ||
+              underlying_type->opcode() == spv::Op::OpTypeRuntimeArray) {
+            underlying_type =
+                _.FindDef(underlying_type->GetOperandAs<uint32_t>(1u));
+          }
+          if (!_.HasCapability(spv::Capability::StorageBuffer16BitAccess) ||
+              !_.HasDecoration(underlying_type->id(),
+                               spv::Decoration::BufferBlock)) {
+            storage_class_ok = false;
+          }
+        }
+        break;
+      case spv::StorageClass::PushConstant:
+        if (!_.HasCapability(spv::Capability::StoragePushConstant16)) {
+          storage_class_ok = false;
+        }
+        break;
+      case spv::StorageClass::Input:
+      case spv::StorageClass::Output:
+        if (!_.HasCapability(spv::Capability::StorageInputOutput16)) {
+          storage_class_ok = false;
+        }
+        break;
+      case spv::StorageClass::Workgroup:
+        if (!_.HasCapability(
+                spv::Capability::WorkgroupMemoryExplicitLayout16BitAccessKHR)) {
+          storage_class_ok = false;
+        }
+        break;
+      default:
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << "Cannot allocate a variable containing a 16-bit type in "
+               << sc_name << " storage class";
+    }
+    if (!storage_class_ok) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "Allocating a variable containing a 16-bit element in "
+             << sc_name << " storage class requires an additional capability";
+    }
+  }
+  // Don't allow variables containing 8-bit elements without the appropriate
+  // capabilities.
+  if (!_.HasCapability(spv::Capability::Int8) &&
+      _.ContainsSizedIntOrFloatType(value_id, spv::Op::OpTypeInt, 8)) {
+    auto underlying_type = value_type;
+    while (underlying_type &&
+           underlying_type->opcode() == spv::Op::OpTypePointer) {
+      storage_class = underlying_type->GetOperandAs<spv::StorageClass>(1u);
+      underlying_type = _.FindDef(underlying_type->GetOperandAs<uint32_t>(2u));
+    }
+    bool storage_class_ok = true;
+    std::string sc_name = _.grammar().lookupOperandName(
+        SPV_OPERAND_TYPE_STORAGE_CLASS, uint32_t(storage_class));
+    switch (storage_class) {
+      case spv::StorageClass::StorageBuffer:
+      case spv::StorageClass::PhysicalStorageBuffer:
+        if (!_.HasCapability(spv::Capability::StorageBuffer8BitAccess)) {
+          storage_class_ok = false;
+        }
+        break;
+      case spv::StorageClass::Uniform:
+        if (underlying_type &&
+            !_.HasCapability(
+                spv::Capability::UniformAndStorageBuffer8BitAccess)) {
+          if (underlying_type->opcode() == spv::Op::OpTypeArray ||
+              underlying_type->opcode() == spv::Op::OpTypeRuntimeArray) {
+            underlying_type =
+                _.FindDef(underlying_type->GetOperandAs<uint32_t>(1u));
+          }
+          if (!_.HasCapability(spv::Capability::StorageBuffer8BitAccess) ||
+              !_.HasDecoration(underlying_type->id(),
+                               spv::Decoration::BufferBlock)) {
+            storage_class_ok = false;
+          }
+        }
+        break;
+      case spv::StorageClass::PushConstant:
+        if (!_.HasCapability(spv::Capability::StoragePushConstant8)) {
+          storage_class_ok = false;
+        }
+        break;
+      case spv::StorageClass::Workgroup:
+        if (!_.HasCapability(
+                spv::Capability::WorkgroupMemoryExplicitLayout8BitAccessKHR)) {
+          storage_class_ok = false;
+        }
+        break;
+      default:
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << "Cannot allocate a variable containing a 8-bit type in "
+               << sc_name << " storage class";
+    }
+    if (!storage_class_ok) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "Allocating a variable containing a 8-bit element in "
+             << sc_name << " storage class requires an additional capability";
+    }
+  }
+
+  if (_.ContainsOCPMicroscalingNonByteType(value_id)) {
+    auto underlying_type = value_type;
+    auto sc = storage_class;
+    while (underlying_type &&
+           underlying_type->opcode() == spv::Op::OpTypePointer) {
+      sc = underlying_type->GetOperandAs<spv::StorageClass>(1u);
+      underlying_type = _.FindDef(underlying_type->GetOperandAs<uint32_t>(2u));
+    }
+    if (sc != spv::StorageClass::Function && sc != spv::StorageClass::Private) {
+      std::string sc_name = _.grammar().lookupOperandName(
+          SPV_OPERAND_TYPE_STORAGE_CLASS, uint32_t(sc));
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "Cannot allocate a variable containing a Float4EXT or "
+                "Float6EXT type in "
+             << sc_name << " storage class";
+    }
+  }
+
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateVariableTileShadingQCOM(ValidationState_t& _,
+                                             const Instruction* inst) {
+  auto result_type = _.FindDef(inst->type_id());
+  if (result_type->opcode() == spv::Op::OpTypePointer) {
+    const auto pointee_type = _.FindDef(result_type->GetOperandAs<uint32_t>(2));
+    if (pointee_type && pointee_type->opcode() == spv::Op::OpTypeImage) {
+      spv::Dim dim = static_cast<spv::Dim>(pointee_type->word(3));
+      if (dim != spv::Dim::Dim2D) {
+        return _.diag(SPV_ERROR_INVALID_DATA, inst)
+               << _.VkErrorID(10693)
+               << "Any OpTypeImage variable in the TileAttachmentQCOM "
+                  "Storage Class must "
+                  "have 2D as its dimension";
+      }
+      unsigned sampled = pointee_type->word(7);
+      if (sampled != 1 && sampled != 2) {
+        return _.diag(SPV_ERROR_INVALID_DATA, inst)
+               << _.VkErrorID(10694)
+               << "Any OpTypeImage variable in the TileAttachmentQCOM "
+                  "Storage Class must "
+                  "have 1 or 2 as Image 'Sampled' parameter";
+      }
+      for (const auto& pair_o : inst->uses()) {
+        const auto* use_inst_o = pair_o.first;
+        if (use_inst_o->opcode() == spv::Op::OpLoad) {
+          for (const auto& pair_i : use_inst_o->uses()) {
+            const auto* use_inst_i = pair_i.first;
+            switch (use_inst_i->opcode()) {
+              case spv::Op::OpImageQueryFormat:
+              case spv::Op::OpImageQueryOrder:
+              case spv::Op::OpImageQuerySizeLod:
+              case spv::Op::OpImageQuerySize:
+              case spv::Op::OpImageQueryLod:
+              case spv::Op::OpImageQueryLevels:
+              case spv::Op::OpImageQuerySamples:
+                return _.diag(SPV_ERROR_INVALID_DATA, inst)
+                       << _.VkErrorID(10697)
+                       << "Any variable in the TileAttachmentQCOM Storage "
+                          "Class must "
+                          "not be consumed by an OpImageQuery* instruction";
+              default:
+                break;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (!(_.HasDecoration(inst->id(), spv::Decoration::DescriptorSet) &&
+        _.HasDecoration(inst->id(), spv::Decoration::Binding))) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << _.VkErrorID(10695)
+           << "Any variable in the TileAttachmentQCOM Storage Class must "
+              "be decorated with DescriptorSet and Binding";
+  }
+  if (_.HasDecoration(inst->id(), spv::Decoration::Component)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << _.VkErrorID(10696)
+           << "Any variable in the TileAttachmentQCOM Storage Class must "
+              "not be decorated with Component decoration";
+  }
+
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateVariableTileImageEXT(ValidationState_t& _,
+                                          const Instruction* inst) {
+  bool is_valid_decl = true;
+
+  auto result_type = _.FindDef(inst->type_id());
+  if (result_type->opcode() == spv::Op::OpTypePointer) {
+    auto pointee_type = _.FindDef(result_type->GetOperandAs<uint32_t>(2));
+
+    while (pointee_type && pointee_type->opcode() == spv::Op::OpTypeArray) {
+      pointee_type = _.FindDef(pointee_type->GetOperandAs<uint32_t>(1));
+    }
+
+    if (pointee_type && pointee_type->opcode() == spv::Op::OpTypeImage) {
+      spv::Dim dim = static_cast<spv::Dim>(pointee_type->word(3));
+      if (dim != spv::Dim::TileImageDataEXT) {
+        is_valid_decl = false;
+      }
+    } else {
+      is_valid_decl = false;
+    }
+  }
+
+  if (!is_valid_decl) {
+    return _.diag(SPV_ERROR_INVALID_DATA, inst)
+           << _.VkErrorID(8724)
+           << "The TileImageEXT Storage Class must only be used for declaring "
+              "tile image variables";
+  } else {
+    return SPV_SUCCESS;
+  }
+}
+
+spv_result_t ValidateVariable(ValidationState_t& _, const Instruction* inst) {
+  const bool untyped_pointer = inst->opcode() == spv::Op::OpUntypedVariableKHR;
+
+  auto result_type = _.FindDef(inst->type_id());
+  if (untyped_pointer) {
+    if (!result_type ||
+        result_type->opcode() != spv::Op::OpTypeUntypedPointerKHR)
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "Result type must be an untyped pointer";
+  } else {
+    if (!result_type || result_type->opcode() != spv::Op::OpTypePointer) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "OpVariable Result Type <id> " << _.getIdName(inst->type_id())
+             << " is not a pointer type.";
+    }
+  }
+
+  const auto storage_class_index = 2u;
+  auto storage_class =
+      inst->GetOperandAs<spv::StorageClass>(storage_class_index);
+  uint32_t value_id = 0;
+  if (untyped_pointer) {
+    const bool has_data_type = 3u < inst->operands().size();
+    if (has_data_type) {
+      value_id = inst->GetOperandAs<uint32_t>(3u);
+      auto data_type = _.FindDef(value_id);
+      if (!data_type || !spvOpcodeGeneratesType(data_type->opcode())) {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << "Data type must be a type instruction";
+      }
+    } else {
+      if (storage_class == spv::StorageClass::Function ||
+          storage_class == spv::StorageClass::Private ||
+          storage_class == spv::StorageClass::Workgroup) {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << "Data type must be specified for Function, Private, and "
+                  "Workgroup storage classes";
+      }
+      // Added from SPV_EXT_descriptor_heap
+      // Vulkan allows untyped pointer without |Data Type| but only for heap
+      // decorated variable that are in UniformConstant
+      if (spvIsVulkanEnv(_.context()->target_env)) {
+        if (storage_class != spv::StorageClass::UniformConstant) {
+          return _.diag(SPV_ERROR_INVALID_ID, inst)
+                 << _.VkErrorID(11167) << "Storage class is "
+                 << StorageClassToString(storage_class)
+                 << ", but Vulkan requires that Data Type be specified when "
+                    "not using UniformConstant storage class";
+        } else if (!(_.IsDescriptorHeapBaseVariable(inst))) {
+          return _.diag(SPV_ERROR_INVALID_ID, inst)
+                 << _.VkErrorID(11347)
+                 << "Storage class is UniformConstant, but Vulkan requires "
+                    "that Data Type be specified if the variable is not "
+                    "decorated with SamplerHeapEXT or ResourceHeapEXT";
+        }
+      }
+    }
+  }
+
+  // For OpVariable the data type comes from pointee type of the result type,
+  // while for OpUntypedVariableKHR the data type comes from the operand.
+  if (!untyped_pointer) {
+    value_id = result_type->GetOperandAs<uint32_t>(2);
+  }
+  const Instruction* value_type = value_id == 0 ? nullptr : _.FindDef(value_id);
+
+  if (auto error =
+          ValidateVariableInitializer(_, inst, storage_class, value_id))
+    return error;
+
+  if (auto error =
+          ValidateVariableStorageClass(_, inst, storage_class, value_type))
+    return error;
+
+  // Variable pointer related restrictions.
+  const Instruction* pointee =
+      untyped_pointer ? value_id == 0 ? nullptr : _.FindDef(value_id)
+                      : _.FindDef(result_type->word(3));
+
+  if (pointee) {
+    if (auto error = ValidateVariablePointer(_, inst, storage_class, *pointee))
+      return error;
+    if (auto error = ValidateVariableCoopMat(_, inst, storage_class, *pointee))
+      return error;
+  }
+
+  if (spvIsVulkanEnv(_.context()->target_env)) {
+    if (pointee) {
+      if (auto error = ValidateVariableVulkanDescriptor(_, inst, storage_class,
+                                                        *pointee))
+        return error;
+      if (auto error = ValidateVariableVulkanLongVector(_, inst, storage_class,
+                                                        *pointee))
+        return error;
+    }
+
+    if (auto error = ValidateVariableVulkanInterface(_, inst, storage_class,
+                                                     value_type, value_id))
+      return error;
+
+    if (value_type) {
+      if (auto error = ValidateVariableVulkanArray(_, inst, storage_class,
+                                                   *value_type, value_id))
+        return error;
+    }
+  }
+
   if (_.HasCapability(spv::Capability::Shader)) {
-    // Don't allow variables containing 16-bit elements without the appropriate
-    // capabilities.
-    if ((!_.HasCapability(spv::Capability::Int16) &&
-         _.ContainsSizedIntOrFloatType(value_id, spv::Op::OpTypeInt, 16)) ||
-        (!_.HasCapability(spv::Capability::Float16) &&
-         _.ContainsSizedIntOrFloatType(value_id, spv::Op::OpTypeFloat, 16))) {
-      auto underlying_type = value_type;
-      while (underlying_type &&
-             underlying_type->opcode() == spv::Op::OpTypePointer) {
-        storage_class = underlying_type->GetOperandAs<spv::StorageClass>(1u);
-        underlying_type =
-            _.FindDef(underlying_type->GetOperandAs<uint32_t>(2u));
-      }
-      bool storage_class_ok = true;
-      std::string sc_name = _.grammar().lookupOperandName(
-          SPV_OPERAND_TYPE_STORAGE_CLASS, uint32_t(storage_class));
-      switch (storage_class) {
-        case spv::StorageClass::StorageBuffer:
-        case spv::StorageClass::PhysicalStorageBuffer:
-          if (!_.HasCapability(spv::Capability::StorageBuffer16BitAccess)) {
-            storage_class_ok = false;
-          }
-          break;
-        case spv::StorageClass::Uniform:
-          if (underlying_type &&
-              !_.HasCapability(
-                  spv::Capability::UniformAndStorageBuffer16BitAccess)) {
-            if (underlying_type->opcode() == spv::Op::OpTypeArray ||
-                underlying_type->opcode() == spv::Op::OpTypeRuntimeArray) {
-              underlying_type =
-                  _.FindDef(underlying_type->GetOperandAs<uint32_t>(1u));
-            }
-            if (!_.HasCapability(spv::Capability::StorageBuffer16BitAccess) ||
-                !_.HasDecoration(underlying_type->id(),
-                                 spv::Decoration::BufferBlock)) {
-              storage_class_ok = false;
-            }
-          }
-          break;
-        case spv::StorageClass::PushConstant:
-          if (!_.HasCapability(spv::Capability::StoragePushConstant16)) {
-            storage_class_ok = false;
-          }
-          break;
-        case spv::StorageClass::Input:
-        case spv::StorageClass::Output:
-          if (!_.HasCapability(spv::Capability::StorageInputOutput16)) {
-            storage_class_ok = false;
-          }
-          break;
-        case spv::StorageClass::Workgroup:
-          if (!_.HasCapability(
-                  spv::Capability::
-                      WorkgroupMemoryExplicitLayout16BitAccessKHR)) {
-            storage_class_ok = false;
-          }
-          break;
-        default:
-          return _.diag(SPV_ERROR_INVALID_ID, inst)
-                 << "Cannot allocate a variable containing a 16-bit type in "
-                 << sc_name << " storage class";
-      }
-      if (!storage_class_ok) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << "Allocating a variable containing a 16-bit element in "
-               << sc_name << " storage class requires an additional capability";
-      }
-    }
-    // Don't allow variables containing 8-bit elements without the appropriate
-    // capabilities.
-    if (!_.HasCapability(spv::Capability::Int8) &&
-        _.ContainsSizedIntOrFloatType(value_id, spv::Op::OpTypeInt, 8)) {
-      auto underlying_type = value_type;
-      while (underlying_type &&
-             underlying_type->opcode() == spv::Op::OpTypePointer) {
-        storage_class = underlying_type->GetOperandAs<spv::StorageClass>(1u);
-        underlying_type =
-            _.FindDef(underlying_type->GetOperandAs<uint32_t>(2u));
-      }
-      bool storage_class_ok = true;
-      std::string sc_name = _.grammar().lookupOperandName(
-          SPV_OPERAND_TYPE_STORAGE_CLASS, uint32_t(storage_class));
-      switch (storage_class) {
-        case spv::StorageClass::StorageBuffer:
-        case spv::StorageClass::PhysicalStorageBuffer:
-          if (!_.HasCapability(spv::Capability::StorageBuffer8BitAccess)) {
-            storage_class_ok = false;
-          }
-          break;
-        case spv::StorageClass::Uniform:
-          if (underlying_type &&
-              !_.HasCapability(
-                  spv::Capability::UniformAndStorageBuffer8BitAccess)) {
-            if (underlying_type->opcode() == spv::Op::OpTypeArray ||
-                underlying_type->opcode() == spv::Op::OpTypeRuntimeArray) {
-              underlying_type =
-                  _.FindDef(underlying_type->GetOperandAs<uint32_t>(1u));
-            }
-            if (!_.HasCapability(spv::Capability::StorageBuffer8BitAccess) ||
-                !_.HasDecoration(underlying_type->id(),
-                                 spv::Decoration::BufferBlock)) {
-              storage_class_ok = false;
-            }
-          }
-          break;
-        case spv::StorageClass::PushConstant:
-          if (!_.HasCapability(spv::Capability::StoragePushConstant8)) {
-            storage_class_ok = false;
-          }
-          break;
-        case spv::StorageClass::Workgroup:
-          if (!_.HasCapability(
-                  spv::Capability::
-                      WorkgroupMemoryExplicitLayout8BitAccessKHR)) {
-            storage_class_ok = false;
-          }
-          break;
-        default:
-          return _.diag(SPV_ERROR_INVALID_ID, inst)
-                 << "Cannot allocate a variable containing a 8-bit type in "
-                 << sc_name << " storage class";
-      }
-      if (!storage_class_ok) {
-        return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << "Allocating a variable containing a 8-bit element in "
-               << sc_name << " storage class requires an additional capability";
-      }
-    }
+    if (auto error = ValidateVariableShader(_, inst, storage_class, value_type,
+                                            value_id))
+      return error;
+  }
+
+  if (_.HasCapability(spv::Capability::TileShadingQCOM) &&
+      storage_class == spv::StorageClass::TileAttachmentQCOM) {
+    if (auto error = ValidateVariableTileShadingQCOM(_, inst)) return error;
+  }
+
+  if (_.HasCapability(spv::Capability::TileImageColorReadAccessEXT) &&
+      storage_class == spv::StorageClass::TileImageEXT) {
+    if (auto error = ValidateVariableTileImageEXT(_, inst)) return error;
   }
 
   return SPV_SUCCESS;
@@ -1023,7 +1385,95 @@ spv_result_t ValidateLoad(ValidationState_t& _, const Instruction* inst) {
     }
   }
 
+  // Skip checking if there is zero chance for this having a mesh shader
+  // entrypoint
+  if (_.HasCapability(spv::Capability::MeshShadingEXT) &&
+      pointer_type->GetOperandAs<spv::StorageClass>(1) ==
+          spv::StorageClass::Output) {
+    std::string errorVUID = _.VkErrorID(7107);
+    _.function(inst->function()->id())
+        ->RegisterExecutionModelLimitation(
+            [errorVUID](spv::ExecutionModel model, std::string* message) {
+              // Seems the NV Mesh extension was less strict and allowed
+              // writting to outputs
+              if (model == spv::ExecutionModel::MeshEXT) {
+                if (message) {
+                  *message = errorVUID +
+                             "The Output Storage Class in a Mesh Execution "
+                             "Model must not be read from";
+                }
+                return false;
+              }
+              return true;
+            });
+  }
+
   _.RegisterQCOMImageProcessingTextureConsumer(pointer_id, inst, nullptr);
+
+  // EXT_descriptor_heap
+  if (spvIsVulkanEnv(_.context()->target_env) &&
+      (result_type->opcode() == spv::Op::OpTypeSampler ||
+       result_type->opcode() == spv::Op::OpTypeImage ||
+       result_type->opcode() == spv::Op::OpTypeAccelerationStructureKHR)) {
+    if (_.IsDescriptorHeapBaseVariable(_.FindDef(pointer_id))) {
+      if (auto descBaseVariable =
+              _.FindUntypedBaseVariable(_.FindDef(pointer_id))) {
+        auto descBaseVariableId = descBaseVariable->id();
+        if (!_.HasDecoration(descBaseVariableId,
+                             spv::Decoration::DescriptorSet) &&
+            !_.HasDecoration(descBaseVariableId, spv::Decoration::Binding)) {
+          switch (result_type->opcode()) {
+            case spv::Op::OpTypeSampler:
+              if (!_.IsBuiltin(descBaseVariableId,
+                               spv::BuiltIn::SamplerHeapEXT)) {
+                return _.diag(SPV_ERROR_INVALID_ID, inst)
+                       << _.VkErrorID(11336)
+                       << "OpTypeSampler pointer instruction has no descriptor "
+                          "set "
+                       << "or binding and is not derived from a variable "
+                          "decorated "
+                          "with "
+                          "SamplerHeapEXT";
+              }
+              break;
+            case spv::Op::OpTypeImage:
+              if (!_.IsBuiltin(descBaseVariableId,
+                               spv::BuiltIn::ResourceHeapEXT)) {
+                return _.diag(SPV_ERROR_INVALID_ID, inst)
+                       << _.VkErrorID(11337)
+                       << "OpTypeImage pointer instruction has no descriptor "
+                          "set "
+                       << "or binding and is not derived from a variable "
+                          "decorated "
+                          "with "
+                          "ResourceHeapEXT";
+              }
+              break;
+            case spv::Op::OpTypeAccelerationStructureKHR:
+              uint32_t data_type;
+              spv::StorageClass sc;
+              if (_.GetPointerTypeInfo(descBaseVariable->type_id(), &data_type,
+                                       &sc) &&
+                  sc != spv::StorageClass::Private &&
+                  sc != spv::StorageClass::Function &&
+                  !_.IsBuiltin(descBaseVariableId,
+                               spv::BuiltIn::ResourceHeapEXT)) {
+                return _.diag(SPV_ERROR_INVALID_ID, inst)
+                       << _.VkErrorID(11339)
+                       << "OpTypeAccelerationStructureKHR pointer instruction "
+                          "has "
+                          "no "
+                       << "descriptor set or binding and is not derived from a "
+                          "variable decorated with ResourceHeapEXT";
+              }
+              break;
+            default:
+              break;
+          }
+        }
+      }
+    }
+  }
 
   return SPV_SUCCESS;
 }
@@ -1228,7 +1678,7 @@ spv_result_t ValidateCopyMemoryMemoryAccess(ValidationState_t& _,
         }
       } else {
         return _.diag(SPV_ERROR_INVALID_DATA, inst)
-               << spvOpcodeString(static_cast<spv::Op>(inst->opcode()))
+               << spvOpcodeString(inst->opcode())
                << " with two memory access operands requires SPIR-V 1.4 or "
                   "later";
       }
@@ -1446,12 +1896,21 @@ spv_result_t ValidateCopyMemory(ValidationState_t& _, const Instruction* inst) {
           }
           if (!int8 && !int16 && !(source_int16_match && target_int16_match)) {
             return _.diag(SPV_ERROR_INVALID_ID, inst)
-                   << "Size must be a multiple of 4";
+                   << _.VkErrorID(11165)
+                   << "Size must be a multiple of 4. This is valid if Source ("
+                   << StorageClassToString(source_sc) << ") and Target ("
+                   << StorageClassToString(source_sc)
+                   << ") storage classes both support either 8-bit or 16-bit";
           }
           if (value % 2 != 0) {
             if (!int8 && !(source_int8_match && target_int8_match)) {
               return _.diag(SPV_ERROR_INVALID_ID, inst)
-                     << "Size must be a multiple of 2";
+                     << _.VkErrorID(11165)
+                     << "Size must be a multiple of 2. This is valid if Source "
+                        "("
+                     << StorageClassToString(source_sc) << ") and Target ("
+                     << StorageClassToString(source_sc)
+                     << ") storage classes both support 8-bit";
             }
           }
         }
@@ -1480,9 +1939,7 @@ spv_result_t ValidateCopyMemory(ValidationState_t& _, const Instruction* inst) {
 
 spv_result_t ValidateAccessChain(ValidationState_t& _,
                                  const Instruction* inst) {
-  std::string instr_name =
-      "Op" + std::string(spvOpcodeString(static_cast<spv::Op>(inst->opcode())));
-
+  const spv::Op opcode = inst->opcode();
   const bool untyped_pointer = spvOpcodeGeneratesUntypedPointer(inst->opcode());
 
   // The result type must be OpTypePointer for regular access chains and an
@@ -1492,19 +1949,17 @@ spv_result_t ValidateAccessChain(ValidationState_t& _,
     if (!result_type ||
         spv::Op::OpTypeUntypedPointerKHR != result_type->opcode()) {
       return _.diag(SPV_ERROR_INVALID_ID, inst)
-             << "The Result Type of " << instr_name << " <id> "
+             << "The Result Type of Op" << spvOpcodeString(opcode) << " <id> "
              << _.getIdName(inst->id())
              << " must be OpTypeUntypedPointerKHR. Found Op"
-             << spvOpcodeString(static_cast<spv::Op>(result_type->opcode()))
-             << ".";
+             << spvOpcodeString(result_type->opcode()) << ".";
     }
   } else {
     if (!result_type || spv::Op::OpTypePointer != result_type->opcode()) {
       return _.diag(SPV_ERROR_INVALID_ID, inst)
-             << "The Result Type of " << instr_name << " <id> "
+             << "The Result Type of Op" << spvOpcodeString(opcode) << " <id> "
              << _.getIdName(inst->id()) << " must be OpTypePointer. Found Op"
-             << spvOpcodeString(static_cast<spv::Op>(result_type->opcode()))
-             << ".";
+             << spvOpcodeString(result_type->opcode()) << ".";
     }
   }
 
@@ -1517,6 +1972,60 @@ spv_result_t ValidateAccessChain(ValidationState_t& _,
       return _.diag(SPV_ERROR_INVALID_ID, inst)
              << "Base type must be a non-pointer type";
     }
+
+    const auto ContainsBlock = [&_](const Instruction* type_inst) {
+      if (type_inst->opcode() == spv::Op::OpTypeStruct) {
+        if (_.HasDecoration(type_inst->id(), spv::Decoration::Block) ||
+            _.HasDecoration(type_inst->id(), spv::Decoration::BufferBlock)) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    // Block (and BufferBlock) arrays cannot be reinterpreted via untyped access
+    // chains.
+    const bool base_type_block_array =
+        base_type->opcode() == spv::Op::OpTypeArray &&
+        _.ContainsType(base_type->id(), ContainsBlock,
+                       /* traverse_all_types = */ false);
+
+    const auto base_index = untyped_pointer ? 3 : 2;
+    const auto base_id = inst->GetOperandAs<uint32_t>(base_index);
+    auto base = _.FindDef(base_id);
+    // Strictly speaking this misses trivial access chains and function
+    // parameter chasing, but that would be a significant complication in the
+    // traversal.
+    while (base->opcode() == spv::Op::OpCopyObject) {
+      base = _.FindDef(base->GetOperandAs<uint32_t>(2));
+    }
+    const Instruction* base_data_type = nullptr;
+    if (base->opcode() == spv::Op::OpVariable) {
+      const auto ptr_type = _.FindDef(base->type_id());
+      base_data_type = _.FindDef(ptr_type->GetOperandAs<uint32_t>(2));
+    } else if (base->opcode() == spv::Op::OpUntypedVariableKHR) {
+      if (base->operands().size() > 3) {
+        base_data_type = _.FindDef(base->GetOperandAs<uint32_t>(3));
+      }
+    }
+
+    if (base_data_type) {
+      const bool base_block_array =
+          base_data_type->opcode() == spv::Op::OpTypeArray &&
+          _.ContainsType(base_data_type->id(), ContainsBlock,
+                         /* traverse_all_types = */ false);
+
+      if (base_type_block_array != base_block_array) {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << "Both Base Type and Base must be Block or BufferBlock arrays "
+                  "or neither can be";
+      } else if (base_type_block_array && base_block_array &&
+                 base_type->id() != base_data_type->id()) {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << "If Base or Base Type is a Block or BufferBlock array, the "
+                  "other must also be the same array";
+      }
+    }
   }
 
   // Base must be a pointer, pointing to the base of a composite object.
@@ -1528,8 +2037,8 @@ spv_result_t ValidateAccessChain(ValidationState_t& _,
                       (untyped_pointer && spv::Op::OpTypeUntypedPointerKHR ==
                                               base_type->opcode()))) {
     return _.diag(SPV_ERROR_INVALID_ID, inst)
-           << "The Base <id> " << _.getIdName(base_id) << " in " << instr_name
-           << " instruction must be a pointer.";
+           << "The Base <id> " << _.getIdName(base_id) << " in Op"
+           << spvOpcodeString(opcode) << " instruction must be a pointer.";
   }
 
   // The result pointer storage class and base pointer storage class must match.
@@ -1539,8 +2048,8 @@ spv_result_t ValidateAccessChain(ValidationState_t& _,
   if (result_type_storage_class != base_type_storage_class) {
     return _.diag(SPV_ERROR_INVALID_ID, inst)
            << "The result pointer storage class and base "
-              "pointer storage class in "
-           << instr_name << " do not match.";
+              "pointer storage class in Op"
+           << spvOpcodeString(opcode) << " do not match.";
   }
 
   // The type pointed to by OpTypePointer (word 3) must be a composite type.
@@ -1564,8 +2073,9 @@ spv_result_t ValidateAccessChain(ValidationState_t& _,
       _.options()->universal_limits_.max_access_chain_indexes;
   if (num_indexes > num_indexes_limit) {
     return _.diag(SPV_ERROR_INVALID_ID, inst)
-           << "The number of indexes in " << instr_name << " may not exceed "
-           << num_indexes_limit << ". Found " << num_indexes << " indexes.";
+           << "The number of indexes in Op" << spvOpcodeString(opcode)
+           << " may not exceed " << num_indexes_limit << ". Found "
+           << num_indexes << " indexes.";
   }
   // Indexes walk the type hierarchy to the desired depth, potentially down to
   // scalar granularity. The first index in Indexes will select the top-level
@@ -1589,18 +2099,41 @@ spv_result_t ValidateAccessChain(ValidationState_t& _,
     auto index_type = _.FindDef(cur_word_instr->type_id());
     if (!index_type || spv::Op::OpTypeInt != index_type->opcode()) {
       return _.diag(SPV_ERROR_INVALID_ID, inst)
-             << "Indexes passed to " << instr_name
+             << "Indexes passed to Op" << spvOpcodeString(opcode)
              << " must be of type integer.";
     }
+
+    // Logical pointer restrictions: any constant index with a signed integer
+    // type must not have its sign bit set.
+    if (!_.options()->relax_logical_pointer &&
+        (_.addressing_model() == spv::AddressingModel::Logical ||
+         _.addressing_model() ==
+             spv::AddressingModel::PhysicalStorageBuffer64) &&
+        result_type_storage_class !=
+            static_cast<uint32_t>(spv::StorageClass::PhysicalStorageBuffer)) {
+      if (index_type->GetOperandAs<uint32_t>(2) == 1) {
+        int64_t val = 0;
+        if (_.EvalConstantValInt64(cur_word, &val)) {
+          if (val < 0) {
+            return _.diag(SPV_ERROR_INVALID_ID, inst)
+                   << "Index at word " << i << " may not have a negative value";
+          }
+        }
+      }
+    }
+
     switch (type_pointee->opcode()) {
       case spv::Op::OpTypeMatrix:
       case spv::Op::OpTypeVector:
+      case spv::Op::OpTypeVectorIdEXT:
       case spv::Op::OpTypeCooperativeMatrixNV:
       case spv::Op::OpTypeCooperativeMatrixKHR:
       case spv::Op::OpTypeArray:
-      case spv::Op::OpTypeRuntimeArray: {
+      case spv::Op::OpTypeRuntimeArray:
+      case spv::Op::OpTypeNodePayloadArrayAMDX: {
         // In OpTypeMatrix, OpTypeVector, spv::Op::OpTypeCooperativeMatrixNV,
-        // OpTypeArray, and OpTypeRuntimeArray, word 2 is the Element Type.
+        // OpTypeVectorIdEXT, OpTypeArray, and OpTypeRuntimeArray, word
+        // 2 is the Element Type.
         type_pointee = _.FindDef(type_pointee->word(2));
         break;
       }
@@ -1609,9 +2142,10 @@ spv_result_t ValidateAccessChain(ValidationState_t& _,
         // index: the index must be an OpConstant.
         int64_t cur_index;
         if (!_.EvalConstantValInt64(cur_word, &cur_index)) {
-          return _.diag(SPV_ERROR_INVALID_ID, cur_word_instr)
-                 << "The <id> passed to " << instr_name
-                 << " to index into a "
+          return _.diag(SPV_ERROR_INVALID_ID, inst)
+                 << "The <id> passed to Op" << spvOpcodeString(opcode)
+                 << " to index " << _.getIdName(cur_word)
+                 << " into a "
                     "structure must be an OpConstant.";
         }
 
@@ -1620,10 +2154,10 @@ spv_result_t ValidateAccessChain(ValidationState_t& _,
         const int64_t num_struct_members =
             static_cast<int64_t>(type_pointee->words().size() - 2);
         if (cur_index >= num_struct_members || cur_index < 0) {
-          return _.diag(SPV_ERROR_INVALID_ID, cur_word_instr)
-                 << "Index is out of bounds: " << instr_name
-                 << " cannot find index " << cur_index
-                 << " into the structure <id> "
+          return _.diag(SPV_ERROR_INVALID_ID, inst)
+                 << "Index " << _.getIdName(cur_word) << " is out of bounds: Op"
+                 << spvOpcodeString(opcode) << " cannot find index "
+                 << cur_index << " into the structure <id> "
                  << _.getIdName(type_pointee->id()) << ". This structure has "
                  << num_struct_members << " members. Largest valid index is "
                  << num_struct_members - 1 << ".";
@@ -1637,7 +2171,7 @@ spv_result_t ValidateAccessChain(ValidationState_t& _,
       default: {
         // Give an error. reached non-composite type while indexes still remain.
         return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << instr_name
+               << "Op" << spvOpcodeString(opcode)
                << " reached non-composite type while indexes "
                   "still remain to be traversed.";
       }
@@ -1652,15 +2186,19 @@ spv_result_t ValidateAccessChain(ValidationState_t& _,
     // At this point, we have fully walked down from the base using the indeces.
     // The type being pointed to should be the same as the result type.
     if (type_pointee->id() != result_type_pointee->id()) {
+      bool same_type = result_type_pointee->opcode() == type_pointee->opcode();
       return _.diag(SPV_ERROR_INVALID_ID, inst)
-             << instr_name << " result type (Op"
-             << spvOpcodeString(
-                    static_cast<spv::Op>(result_type_pointee->opcode()))
+             << "Op" << spvOpcodeString(opcode) << " result type <id> "
+             << _.getIdName(result_type_pointee->id()) << " (Op"
+             << spvOpcodeString(result_type_pointee->opcode())
              << ") does not match the type that results from indexing into the "
                 "base "
-                "<id> (Op"
-             << spvOpcodeString(static_cast<spv::Op>(type_pointee->opcode()))
-             << ").";
+                "<id> "
+             << _.getIdName(type_pointee->id()) << " (Op"
+             << spvOpcodeString(type_pointee->opcode()) << ")."
+             << (same_type ? " (The types must be the exact same Id, so the "
+                             "two types referenced are slighlty different)"
+                           : "");
     }
   }
 
@@ -1669,13 +2207,12 @@ spv_result_t ValidateAccessChain(ValidationState_t& _,
 
 spv_result_t ValidateRawAccessChain(ValidationState_t& _,
                                     const Instruction* inst) {
-  std::string instr_name = "Op" + std::string(spvOpcodeString(inst->opcode()));
-
+  const spv::Op opcode = inst->opcode();
   // The result type must be OpTypePointer.
   const auto result_type = _.FindDef(inst->type_id());
   if (spv::Op::OpTypePointer != result_type->opcode()) {
     return _.diag(SPV_ERROR_INVALID_DATA, inst)
-           << "The Result Type of " << instr_name << " <id> "
+           << "The Result Type of Op" << spvOpcodeString(opcode) << " <id> "
            << _.getIdName(inst->id()) << " must be OpTypePointer. Found Op"
            << spvOpcodeString(result_type->opcode()) << '.';
   }
@@ -1686,7 +2223,7 @@ spv_result_t ValidateRawAccessChain(ValidationState_t& _,
       storage_class != spv::StorageClass::PhysicalStorageBuffer &&
       storage_class != spv::StorageClass::Uniform) {
     return _.diag(SPV_ERROR_INVALID_DATA, inst)
-           << "The Result Type of " << instr_name << " <id> "
+           << "The Result Type of Op" << spvOpcodeString(opcode) << " <id> "
            << _.getIdName(inst->id())
            << " must point to a storage class of "
               "StorageBuffer, PhysicalStorageBuffer, or Uniform.";
@@ -1699,7 +2236,7 @@ spv_result_t ValidateRawAccessChain(ValidationState_t& _,
       result_type_pointee->opcode() == spv::Op::OpTypeMatrix ||
       result_type_pointee->opcode() == spv::Op::OpTypeStruct) {
     return _.diag(SPV_ERROR_INVALID_DATA, inst)
-           << "The Result Type of " << instr_name << " <id> "
+           << "The Result Type of Op" << spvOpcodeString(opcode) << " <id> "
            << _.getIdName(inst->id())
            << " must not point to "
               "OpTypeArray, OpTypeMatrix, or OpTypeStruct.";
@@ -1709,7 +2246,7 @@ spv_result_t ValidateRawAccessChain(ValidationState_t& _,
   const auto stride = _.FindDef(inst->GetOperandAs<uint32_t>(3));
   if (stride->opcode() != spv::Op::OpConstant) {
     return _.diag(SPV_ERROR_INVALID_DATA, inst)
-           << "The Stride of " << instr_name << " <id> "
+           << "The Stride of Op" << spvOpcodeString(opcode) << " <id> "
            << _.getIdName(inst->id()) << " must be OpConstant. Found Op"
            << spvOpcodeString(stride->opcode()) << '.';
   }
@@ -1717,7 +2254,7 @@ spv_result_t ValidateRawAccessChain(ValidationState_t& _,
   const auto stride_type = _.FindDef(stride->type_id());
   if (stride_type->opcode() != spv::Op::OpTypeInt) {
     return _.diag(SPV_ERROR_INVALID_DATA, inst)
-           << "The type of Stride of " << instr_name << " <id> "
+           << "The type of Stride of Op" << spvOpcodeString(opcode) << " <id> "
            << _.getIdName(inst->id()) << " must be OpTypeInt. Found Op"
            << spvOpcodeString(stride_type->opcode()) << '.';
   }
@@ -1729,16 +2266,17 @@ spv_result_t ValidateRawAccessChain(ValidationState_t& _,
     const auto value_type = _.FindDef(value->type_id());
     if (value_type->opcode() != spv::Op::OpTypeInt) {
       return _.diag(SPV_ERROR_INVALID_DATA, inst)
-             << "The type of " << name << " of " << instr_name << " <id> "
-             << _.getIdName(inst->id()) << " must be OpTypeInt. Found Op"
+             << "The type of " << name << " of Op" << spvOpcodeString(opcode)
+             << " <id> " << _.getIdName(inst->id())
+             << " must be OpTypeInt. Found Op"
              << spvOpcodeString(value_type->opcode()) << '.';
     }
     const auto width = value_type->GetOperandAs<uint32_t>(1);
     if (width != 32) {
       return _.diag(SPV_ERROR_INVALID_DATA, inst)
-             << "The integer width of " << name << " of " << instr_name
-             << " <id> " << _.getIdName(inst->id()) << " must be 32. Found "
-             << width << '.';
+             << "The integer width of " << name << " of Op"
+             << spvOpcodeString(opcode) << " <id> " << _.getIdName(inst->id())
+             << " must be 32. Found " << width << '.';
     }
     return SPV_SUCCESS;
   };
@@ -1789,27 +2327,38 @@ spv_result_t ValidateRawAccessChain(ValidationState_t& _,
 
 spv_result_t ValidatePtrAccessChain(ValidationState_t& _,
                                     const Instruction* inst) {
-  if (_.addressing_model() == spv::AddressingModel::Logical &&
-      inst->opcode() == spv::Op::OpPtrAccessChain) {
-    if (!_.features().variable_pointers) {
-      return _.diag(SPV_ERROR_INVALID_DATA, inst)
-             << "Generating variable pointers requires capability "
-             << "VariablePointers or VariablePointersStorageBuffer";
-    }
-  }
-
   // Need to call first, will make sure Base is a valid ID
   if (auto error = ValidateAccessChain(_, inst)) return error;
 
   const bool untyped_pointer = spvOpcodeGeneratesUntypedPointer(inst->opcode());
 
-  const auto base_id = inst->GetOperandAs<uint32_t>(2);
-  const auto base = _.FindDef(base_id);
-  const auto base_type = untyped_pointer
-                             ? _.FindDef(inst->GetOperandAs<uint32_t>(2))
-                             : _.FindDef(base->type_id());
+  const auto base_idx = untyped_pointer ? 3 : 2;
+  const auto base = _.FindDef(inst->GetOperandAs<uint32_t>(base_idx));
+  const auto base_type = _.FindDef(base->type_id());
   const auto base_type_storage_class =
       base_type->GetOperandAs<spv::StorageClass>(1);
+
+  const auto element_idx = untyped_pointer ? 4 : 3;
+  const auto element = _.FindDef(inst->GetOperandAs<uint32_t>(element_idx));
+  const auto element_type = _.FindDef(element->type_id());
+  if (!element_type || element_type->opcode() != spv::Op::OpTypeInt) {
+    return _.diag(SPV_ERROR_INVALID_DATA, inst) << "Element must be an integer";
+  }
+  uint64_t element_val = 0;
+  if (_.EvalConstantValUint64(element->id(), &element_val)) {
+    if (element_val != 0) {
+      const auto interp_type =
+          untyped_pointer ? _.FindDef(inst->GetOperandAs<uint32_t>(2))
+                          : _.FindDef(base_type->GetOperandAs<uint32_t>(2));
+      if (interp_type->opcode() == spv::Op::OpTypeStruct &&
+          (_.HasDecoration(interp_type->id(), spv::Decoration::Block) ||
+           _.HasDecoration(interp_type->id(), spv::Decoration::BufferBlock))) {
+        return _.diag(SPV_ERROR_INVALID_DATA, inst)
+               << "Element must be 0 if the interpretation type is a Block- or "
+                  "BufferBlock-decorated structure";
+      }
+    }
+  }
 
   if (_.HasCapability(spv::Capability::Shader) &&
       (base_type_storage_class == spv::StorageClass::Uniform ||
@@ -1818,10 +2367,11 @@ spv_result_t ValidatePtrAccessChain(ValidationState_t& _,
        base_type_storage_class == spv::StorageClass::PushConstant ||
        (_.HasCapability(spv::Capability::WorkgroupMemoryExplicitLayoutKHR) &&
         base_type_storage_class == spv::StorageClass::Workgroup)) &&
-      !_.HasDecoration(base_type->id(), spv::Decoration::ArrayStride)) {
+      (!_.HasDecoration(base_type->id(), spv::Decoration::ArrayStride) &&
+       !_.HasDecoration(base_type->id(), spv::Decoration::ArrayStrideIdEXT))) {
     return _.diag(SPV_ERROR_INVALID_DATA, inst)
            << "OpPtrAccessChain must have a Base whose type is decorated "
-              "with ArrayStride";
+              "with ArrayStride or ArrayStrideIdEXT";
   }
 
   if (spvIsVulkanEnv(_.context()->target_env)) {
@@ -1857,32 +2407,39 @@ spv_result_t ValidatePtrAccessChain(ValidationState_t& _,
 
 spv_result_t ValidateArrayLength(ValidationState_t& state,
                                  const Instruction* inst) {
-  std::string instr_name =
-      "Op" + std::string(spvOpcodeString(static_cast<spv::Op>(inst->opcode())));
+  const spv::Op opcode = inst->opcode();
 
-  // Result type must be a 32-bit unsigned int.
-  auto result_type = state.FindDef(inst->type_id());
-  if (result_type->opcode() != spv::Op::OpTypeInt ||
-      result_type->GetOperandAs<uint32_t>(1) != 32 ||
-      result_type->GetOperandAs<uint32_t>(2) != 0) {
+  // Result type must be a 32- or 64-bit unsigned int.
+  // 64-bit requires CapabilityShader64BitIndexingEXT or a pipeline/shader
+  // flag and is validated in VVL.
+  const uint32_t result_type_id = inst->type_id();
+  if (!state.IsIntScalarTypeWithSignedness(result_type_id, 0)) {
     return state.diag(SPV_ERROR_INVALID_ID, inst)
-           << "The Result Type of " << instr_name << " <id> "
+           << "The Result Type of Op" << spvOpcodeString(opcode) << " <id> "
            << state.getIdName(inst->id())
-           << " must be OpTypeInt with width 32 and signedness 0.";
+           << " must be OpTypeInt with width 32 or 64 and signedness 0.";
+  }
+  const uint32_t result_type_width = state.GetBitWidth(inst->type_id());
+  if (result_type_width != 32 && result_type_width != 64) {
+    return state.diag(SPV_ERROR_INVALID_ID, inst)
+           << "The Result Type of Op" << spvOpcodeString(opcode) << " <id> "
+           << state.getIdName(inst->id())
+           << " must be OpTypeInt with width 32 or 64 and signedness 0.";
   }
 
   const bool untyped = inst->opcode() == spv::Op::OpUntypedArrayLengthKHR;
   auto pointer_ty_id = state.GetOperandTypeId(inst, (untyped ? 3 : 2));
   auto pointer_ty = state.FindDef(pointer_ty_id);
   if (untyped) {
-    if (pointer_ty->opcode() != spv::Op::OpTypeUntypedPointerKHR) {
+    if (!pointer_ty ||
+        pointer_ty->opcode() != spv::Op::OpTypeUntypedPointerKHR) {
       return state.diag(SPV_ERROR_INVALID_ID, inst)
-             << "Pointer must be an untyped pointer";
+             << "Pointer must be an untyped pointer object";
     }
-  } else if (pointer_ty->opcode() != spv::Op::OpTypePointer) {
+  } else if (!pointer_ty || pointer_ty->opcode() != spv::Op::OpTypePointer) {
     return state.diag(SPV_ERROR_INVALID_ID, inst)
-           << "The Structure's type in " << instr_name << " <id> "
-           << state.getIdName(inst->id())
+           << "The Structure's type in Op" << spvOpcodeString(opcode)
+           << " <id> " << state.getIdName(inst->id())
            << " must be a pointer to an OpTypeStruct.";
   }
 
@@ -1895,8 +2452,8 @@ spv_result_t ValidateArrayLength(ValidationState_t& state,
 
   if (structure_type->opcode() != spv::Op::OpTypeStruct) {
     return state.diag(SPV_ERROR_INVALID_ID, inst)
-           << "The Structure's type in " << instr_name << " <id> "
-           << state.getIdName(inst->id())
+           << "The Structure's type in Op" << spvOpcodeString(opcode)
+           << " <id> " << state.getIdName(inst->id())
            << " must be a pointer to an OpTypeStruct.";
   }
 
@@ -1905,8 +2462,9 @@ spv_result_t ValidateArrayLength(ValidationState_t& state,
       state.FindDef(structure_type->GetOperandAs<uint32_t>(num_of_members));
   if (last_member->opcode() != spv::Op::OpTypeRuntimeArray) {
     return state.diag(SPV_ERROR_INVALID_ID, inst)
-           << "The Structure's last member in " << instr_name << " <id> "
-           << state.getIdName(inst->id()) << " must be an OpTypeRuntimeArray.";
+           << "The Structure's last member in Op" << spvOpcodeString(opcode)
+           << " <id> " << state.getIdName(inst->id())
+           << " must be an OpTypeRuntimeArray.";
   }
 
   // The array member must the index of the last element (the run time
@@ -1914,42 +2472,87 @@ spv_result_t ValidateArrayLength(ValidationState_t& state,
   const auto index = untyped ? 4 : 3;
   if (inst->GetOperandAs<uint32_t>(index) != num_of_members - 1) {
     return state.diag(SPV_ERROR_INVALID_ID, inst)
-           << "The array member in " << instr_name << " <id> "
+           << "The array member in Op" << spvOpcodeString(opcode) << " <id> "
            << state.getIdName(inst->id())
            << " must be the last member of the struct.";
   }
+
+  if (spvIsVulkanEnv(state.context()->target_env)) {
+    const auto storage_class = pointer_ty->GetOperandAs<spv::StorageClass>(1);
+    if (storage_class == spv::StorageClass::Uniform &&
+        state.HasDecoration(structure_type->id(), spv::Decoration::Block)) {
+      return state.diag(SPV_ERROR_INVALID_ID, inst)
+             << state.VkErrorID(11805) << "Op" << spvOpcodeString(opcode)
+             << " must not be used on the OpTypeRuntimeArray inside a Uniform "
+                "block";
+    }
+  }
+
   return SPV_SUCCESS;
 }
 
-spv_result_t ValidateCooperativeMatrixLengthNV(ValidationState_t& state,
-                                               const Instruction* inst) {
-  std::string instr_name =
-      "Op" + std::string(spvOpcodeString(static_cast<spv::Op>(inst->opcode())));
-
+spv_result_t ValidateCooperativeMatrixLength(ValidationState_t& state,
+                                             const Instruction* inst,
+                                             bool is_khr,
+                                             uint32_t operand_index = 2) {
+  const spv::Op opcode = inst->opcode();
   // Result type must be a 32-bit unsigned int.
-  auto result_type = state.FindDef(inst->type_id());
-  if (result_type->opcode() != spv::Op::OpTypeInt ||
-      result_type->GetOperandAs<uint32_t>(1) != 32 ||
-      result_type->GetOperandAs<uint32_t>(2) != 0) {
+  const uint32_t result_type_id = inst->type_id();
+  if (!state.IsIntScalarTypeWithSignedness(result_type_id, 0) ||
+      state.GetBitWidth(inst->type_id()) != 32) {
     return state.diag(SPV_ERROR_INVALID_ID, inst)
-           << "The Result Type of " << instr_name << " <id> "
+           << "The Result Type of Op" << spvOpcodeString(opcode) << " <id> "
            << state.getIdName(inst->id())
            << " must be OpTypeInt with width 32 and signedness 0.";
   }
 
-  bool isKhr = inst->opcode() == spv::Op::OpCooperativeMatrixLengthKHR;
-  auto type_id = inst->GetOperandAs<uint32_t>(2);
+  auto type_id = inst->GetOperandAs<uint32_t>(operand_index);
   auto type = state.FindDef(type_id);
-  if (isKhr && type->opcode() != spv::Op::OpTypeCooperativeMatrixKHR) {
+  if (is_khr && type->opcode() != spv::Op::OpTypeCooperativeMatrixKHR) {
     return state.diag(SPV_ERROR_INVALID_ID, inst)
-           << "The type in " << instr_name << " <id> "
+           << "The type in Op" << spvOpcodeString(opcode) << " <id> "
            << state.getIdName(type_id)
            << " must be OpTypeCooperativeMatrixKHR.";
-  } else if (!isKhr && type->opcode() != spv::Op::OpTypeCooperativeMatrixNV) {
+  } else if (!is_khr && type->opcode() != spv::Op::OpTypeCooperativeMatrixNV) {
     return state.diag(SPV_ERROR_INVALID_ID, inst)
-           << "The type in " << instr_name << " <id> "
+           << "The type in Op" << spvOpcodeString(opcode) << " <id> "
            << state.getIdName(type_id) << " must be OpTypeCooperativeMatrixNV.";
   }
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateCooperativeMatrixGetCoordinateEXT(
+    ValidationState_t& state, const Instruction* inst) {
+  std::string instr_name = "OpCooperativeMatrixGetCoordinateEXT";
+
+  // Result type must be a uvec2
+  if (!state.IsIntVectorType(inst->type_id(), 32, 2)) {
+    return state.diag(SPV_ERROR_INVALID_ID, inst)
+           << instr_name << " Result Type <id> "
+           << state.getIdName(inst->type_id())
+           << " must be OpTypeVector with two 32-bit integer components.";
+  }
+
+  // Matrix operand must be a cooperative matrix
+  auto matrix_type_id =
+      state.FindDef(inst->GetOperandAs<uint32_t>(2))->type_id();
+  if (!state.IsCooperativeMatrixKHRType(matrix_type_id)) {
+    return state.diag(SPV_ERROR_INVALID_ID, inst)
+           << instr_name << " Matrix <id> "
+           << state.getIdName(inst->GetOperandAs<uint32_t>(2))
+           << " must be OpTypeCooperativeMatrixKHR.";
+  }
+
+  // Index operand must be a 32-bit int.
+  auto index_type_id =
+      state.FindDef(inst->GetOperandAs<uint32_t>(3))->type_id();
+  if (!state.IsIntScalarType(index_type_id, 32)) {
+    return state.diag(SPV_ERROR_INVALID_ID, inst)
+           << instr_name << " Index <id> "
+           << state.getIdName(inst->GetOperandAs<uint32_t>(3))
+           << " must be OpTypeInt with width 32.";
+  }
+
   return SPV_SUCCESS;
 }
 
@@ -2150,22 +2753,95 @@ spv_result_t ValidateCooperativeMatrixLoadStoreKHR(ValidationState_t& _,
   }
 
   bool stride_required = false;
+  bool layout_requires_constant_stride = false;
   uint64_t layout;
   if (_.EvalConstantValUint64(layout_id, &layout)) {
+    const bool is_arm_layout =
+        (layout ==
+         (uint64_t)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM) ||
+        (layout ==
+         (uint64_t)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM);
+
+    if (is_arm_layout) {
+      if (!_.HasCapability(spv::Capability::CooperativeMatrixLayoutsARM)) {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << "Using the RowBlockedInterleavedARM or "
+                  "ColumnBlockedInterleavedARM MemoryLayout requires the "
+                  "CooperativeMatrixLayoutsARM capability be declared";
+      }
+    }
+
     stride_required =
         (layout == (uint64_t)spv::CooperativeMatrixLayout::RowMajorKHR) ||
-        (layout == (uint64_t)spv::CooperativeMatrixLayout::ColumnMajorKHR);
+        (layout == (uint64_t)spv::CooperativeMatrixLayout::ColumnMajorKHR) ||
+        is_arm_layout;
+    layout_requires_constant_stride = is_arm_layout;
   }
 
   const auto stride_index =
       (inst->opcode() == spv::Op::OpCooperativeMatrixLoadKHR) ? 4u : 3u;
   if (inst->operands().size() > stride_index) {
     const auto stride_id = inst->GetOperandAs<uint32_t>(stride_index);
-    const auto stride = _.FindDef(stride_id);
-    if (!stride || !_.IsIntScalarType(stride->type_id())) {
+    const auto stride_inst = _.FindDef(stride_id);
+    if (!stride_inst || !_.IsIntScalarType(stride_inst->type_id())) {
       return _.diag(SPV_ERROR_INVALID_ID, inst)
              << "Stride operand <id> " << _.getIdName(stride_id)
              << " must be a scalar integer type.";
+    }
+    // Check SPV_ARM_cooperative_matrix_layouts constraints
+    if (layout_requires_constant_stride &&
+        !spvOpcodeIsConstant(stride_inst->opcode())) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "MemoryLayout " << layout
+             << " requires Stride come from a constant instruction.";
+    }
+    if (layout_requires_constant_stride) {
+      uint64_t stride;
+      if (_.EvalConstantValUint64(stride_id, &stride)) {
+        if ((layout ==
+             (uint64_t)
+                 spv::CooperativeMatrixLayout::RowBlockedInterleavedARM) ||
+            (layout ==
+             (uint64_t)
+                 spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM)) {
+          if ((stride != 1) && (stride != 2) && (stride != 4)) {
+            return _.diag(SPV_ERROR_INVALID_ID, inst)
+                   << "MemoryLayout " << layout
+                   << " requires Stride be 1, 2, or 4.";
+          }
+        }
+        const uint32_t elty_id = matrix_type->GetOperandAs<uint32_t>(1);
+        const uint32_t rows_id = matrix_type->GetOperandAs<uint32_t>(3);
+        const uint32_t cols_id = matrix_type->GetOperandAs<uint32_t>(4);
+        uint64_t rows = 0, cols = 0;
+        _.EvalConstantValUint64(rows_id, &rows);
+        _.EvalConstantValUint64(cols_id, &cols);
+        uint32_t sizeof_component_in_bytes = _.GetBitWidth(elty_id) / 8;
+        uint64_t rows_required_multiple = 4;
+        uint64_t cols_required_multiple = 16 / sizeof_component_in_bytes;
+
+        if (layout ==
+            (uint64_t)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM) {
+          cols_required_multiple *= stride;
+        }
+        if (layout ==
+            (uint64_t)
+                spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM) {
+          rows_required_multiple *= stride;
+        }
+        if ((rows != 0) && (rows % rows_required_multiple != 0)) {
+          return _.diag(SPV_ERROR_INVALID_ID, inst)
+                 << "MemoryLayout " << layout << " with a Stride of " << stride
+                 << " requires that the number of rows be a multiple of "
+                 << rows_required_multiple;
+        }
+        if ((cols != 0) && (cols % cols_required_multiple != 0)) {
+          return _.diag(SPV_ERROR_INVALID_ID, inst)
+                 << "MemoryLayout " << layout << " with a Stride of " << stride
+                 << " requires that the number of columns be a multiple of "
+                 << cols_required_multiple;
+        }
+      }
     }
   } else if (stride_required) {
     return _.diag(SPV_ERROR_INVALID_ID, inst)
@@ -2182,6 +2858,35 @@ spv_result_t ValidateCooperativeMatrixLoadStoreKHR(ValidationState_t& _,
   return SPV_SUCCESS;
 }
 
+spv_result_t ValidateBufferPointerEXT(ValidationState_t& _,
+                                      const Instruction* inst) {
+  const auto storage_class_ptr = _.FindDef(inst->type_id());
+  if (storage_class_ptr->opcode() != spv::Op::OpTypeUntypedPointerKHR &&
+      storage_class_ptr->opcode() != spv::Op::OpTypePointer) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "OpBufferPointerEXT's Result Type should be "
+           << "a pointer type.";
+  }
+
+  auto sc = storage_class_ptr->GetOperandAs<spv::StorageClass>(1u);
+  if (sc != spv::StorageClass::StorageBuffer &&
+      sc != spv::StorageClass::Uniform) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "OpBufferPointerEXT Result Type must be a pointer type "
+           << "with a Storage Class of Uniform or StorageBuffer.";
+  }
+
+  // Buffer operand
+  auto buffer =
+      _.FindUntypedBaseVariable(_.FindDef(inst->GetOperandAs<uint32_t>(2)));
+  if (!buffer || !_.IsBuiltin(buffer->id(), spv::BuiltIn::ResourceHeapEXT)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "OpBufferPointerEXT's buffer must be an untyped pointer"
+           << " into a variable declared with the ResourceHeapEXT built-in";
+  }
+  return SPV_SUCCESS;
+}
+
 // Returns the number of instruction words taken up by a tensor addressing
 // operands argument and its implied operands.
 int TensorAddressingOperandsNumWords(spv::TensorAddressingOperandsMask mask) {
@@ -2190,6 +2895,9 @@ int TensorAddressingOperandsNumWords(spv::TensorAddressingOperandsMask mask) {
       spv::TensorAddressingOperandsMask::MaskNone)
     ++result;
   if ((mask & spv::TensorAddressingOperandsMask::DecodeFunc) !=
+      spv::TensorAddressingOperandsMask::MaskNone)
+    ++result;
+  if ((mask & spv::TensorAddressingOperandsMask::DecodeVectorFunc) !=
       spv::TensorAddressingOperandsMask::MaskNone)
     ++result;
   return result;
@@ -2320,32 +3028,74 @@ spv_result_t ValidateCooperativeMatrixLoadStoreTensorNV(
     tensor_operand_index++;
   }
 
-  if ((tensor_operands & spv::TensorAddressingOperandsMask::DecodeFunc) !=
-      spv::TensorAddressingOperandsMask::MaskNone) {
+  const bool has_decode_func =
+      (tensor_operands & spv::TensorAddressingOperandsMask::DecodeFunc) !=
+      spv::TensorAddressingOperandsMask::MaskNone;
+  const bool has_decode_vector_func =
+      (tensor_operands & spv::TensorAddressingOperandsMask::DecodeVectorFunc) !=
+      spv::TensorAddressingOperandsMask::MaskNone;
+
+  if (has_decode_func || has_decode_vector_func) {
     if (inst->opcode() == spv::Op::OpCooperativeMatrixStoreTensorNV) {
       return _.diag(SPV_ERROR_INVALID_ID, inst)
-             << "OpCooperativeMatrixStoreTensorNV does not support DecodeFunc.";
+             << "OpCooperativeMatrixStoreTensorNV does not support DecodeFunc "
+                "or DecodeVectorFunc.";
     }
-    const auto decode_func_id =
-        inst->GetOperandAs<uint32_t>(tensor_operand_index);
+  }
+
+  const auto component_type_index = 1;
+  const auto component_type_id =
+      matrix_type->GetOperandAs<uint32_t>(component_type_index);
+  const auto tensor_layout_type = _.FindDef(tensor_layout->type_id());
+
+  // Validate one decode-function operand (scalar DecodeFunc or vector
+  // DecodeVectorFunc). `expect_vector` selects which return-type rule to
+  // enforce.
+  auto validate_decode_function = [&](uint32_t decode_func_id,
+                                      const char* operand_name,
+                                      bool expect_vector) -> spv_result_t {
     const auto decode_func = _.FindDef(decode_func_id);
 
     if (!decode_func || decode_func->opcode() != spv::Op::OpFunction) {
       return _.diag(SPV_ERROR_INVALID_ID, inst)
-             << opname << " DecodeFunc <id> " << _.getIdName(decode_func_id)
-             << " is not a function.";
+             << opname << " " << operand_name << " <id> "
+             << _.getIdName(decode_func_id) << " is not a function.";
     }
-
-    const auto component_type_index = 1;
-    const auto component_type_id =
-        matrix_type->GetOperandAs<uint32_t>(component_type_index);
 
     const auto function_type =
         _.FindDef(decode_func->GetOperandAs<uint32_t>(3));
-    if (function_type->GetOperandAs<uint32_t>(1) != component_type_id) {
-      return _.diag(SPV_ERROR_INVALID_ID, inst)
-             << opname << " DecodeFunc <id> " << _.getIdName(decode_func_id)
-             << " return type must match matrix component type.";
+    const auto return_type_id = function_type->GetOperandAs<uint32_t>(1);
+    const auto return_type = _.FindDef(return_type_id);
+    const bool return_is_scalar_match = (return_type_id == component_type_id);
+    const bool return_is_vector = _.IsVectorType(return_type_id);
+    const uint32_t return_vec_component_type_id =
+        return_is_vector ? return_type->GetOperandAs<uint32_t>(1) : 0;
+
+    if (!expect_vector) {
+      if (!return_is_scalar_match) {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << opname << " " << operand_name << " <id> "
+               << _.getIdName(decode_func_id)
+               << " return type must match matrix component type.";
+      }
+    } else {
+      if (!return_is_vector ||
+          return_vec_component_type_id != component_type_id) {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << opname << " " << operand_name << " <id> "
+               << _.getIdName(decode_func_id)
+               << " return type must be a vector of the matrix component "
+                  "type.";
+      }
+      // GetDimension returns 0 for OpTypeVectorIdEXT whose count is a
+      // spec constant; skip the static check in that case.
+      const uint32_t v = _.GetDimension(return_type_id);
+      if (v != 0 && v != 2 && v != 4 && v != 8) {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << opname << " " << operand_name << " <id> "
+               << _.getIdName(decode_func_id)
+               << " return vector length must be 2, 4, or 8.";
+      }
     }
 
     const auto decode_ptr_type_id = function_type->GetOperandAs<uint32_t>(2);
@@ -2355,21 +3105,20 @@ spv_result_t ValidateCooperativeMatrixLoadStoreTensorNV(
 
     if (decode_storage_class != spv::StorageClass::PhysicalStorageBuffer) {
       return _.diag(SPV_ERROR_INVALID_ID, inst)
-             << opname << " DecodeFunc <id> " << _.getIdName(decode_func_id)
+             << opname << " " << operand_name << " <id> "
+             << _.getIdName(decode_func_id)
              << " first parameter must be pointer to PhysicalStorageBuffer.";
     }
-
-    const auto tensor_layout_type = _.FindDef(tensor_layout->type_id());
 
     for (uint32_t param = 3; param < 5; ++param) {
       const auto param_type_id = function_type->GetOperandAs<uint32_t>(param);
       const auto param_type = _.FindDef(param_type_id);
       if (param_type->opcode() != spv::Op::OpTypeArray) {
         return _.diag(SPV_ERROR_INVALID_ID, inst)
-               << opname << " DecodeFunc <id> " << _.getIdName(decode_func_id)
+               << opname << " " << operand_name << " <id> "
+               << _.getIdName(decode_func_id)
                << " second/third parameter must be array of 32-bit integer "
-                  "with "
-               << " dimension equal to the tensor dimension.";
+                  "with dimension equal to the tensor dimension.";
       }
       const auto length_index = 2u;
       uint64_t array_length;
@@ -2382,14 +3131,41 @@ spv_result_t ValidateCooperativeMatrixLoadStoreTensorNV(
         if (_.EvalConstantValUint64(tensor_layout_dim_id, &dim_value)) {
           if (array_length != dim_value) {
             return _.diag(SPV_ERROR_INVALID_ID, inst)
-                   << opname << " DecodeFunc <id> "
+                   << opname << " " << operand_name << " <id> "
                    << _.getIdName(decode_func_id)
                    << " second/third parameter must be array of 32-bit integer "
-                      "with "
-                   << " dimension equal to the tensor dimension.";
+                      "with dimension equal to the tensor dimension.";
           }
         }
       }
+    }
+
+    return SPV_SUCCESS;
+  };
+
+  if (has_decode_func) {
+    const uint32_t decode_func_id =
+        inst->GetOperandAs<uint32_t>(tensor_operand_index);
+    if (auto error = validate_decode_function(decode_func_id, "DecodeFunc",
+                                              /*expect_vector=*/false)) {
+      return error;
+    }
+    tensor_operand_index++;
+  }
+
+  if (has_decode_vector_func) {
+    if (!has_decode_func) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << opname
+             << " DecodeVectorFunc requires DecodeFunc to also be specified.";
+    }
+
+    const uint32_t decode_vector_func_id =
+        inst->GetOperandAs<uint32_t>(tensor_operand_index);
+    if (auto error =
+            validate_decode_function(decode_vector_func_id, "DecodeVectorFunc",
+                                     /*expect_vector=*/true)) {
+      return error;
     }
 
     tensor_operand_index++;
@@ -2398,12 +3174,443 @@ spv_result_t ValidateCooperativeMatrixLoadStoreTensorNV(
   return SPV_SUCCESS;
 }
 
+spv_result_t ValidateInt32Operand(ValidationState_t& _, const Instruction* inst,
+                                  uint32_t operand_index,
+                                  const char* opcode_name,
+                                  const char* operand_name) {
+  const auto type_id =
+      _.FindDef(inst->GetOperandAs<uint32_t>(operand_index))->type_id();
+  if (!_.IsIntScalarType(type_id, 32)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opcode_name << " " << operand_name << " type <id> "
+           << _.getIdName(type_id) << " is not a 32 bit integer.";
+  }
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateInt32Or64Operand(ValidationState_t& _,
+                                      const Instruction* inst,
+                                      uint32_t operand_index,
+                                      const char* opcode_name,
+                                      const char* operand_name) {
+  const auto type_id =
+      _.FindDef(inst->GetOperandAs<uint32_t>(operand_index))->type_id();
+  if (!_.IsIntScalarType(type_id) ||
+      !(_.GetBitWidth(type_id) == 32 || _.GetBitWidth(type_id) == 64)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opcode_name << " " << operand_name << " type <id> "
+           << _.getIdName(type_id) << " is not a 32 or 64 bit integer.";
+  }
+
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateCooperativeVectorPointer(ValidationState_t& _,
+                                              const Instruction* inst,
+                                              const char* opname,
+                                              uint32_t pointer_index) {
+  const auto pointer_id = inst->GetOperandAs<uint32_t>(pointer_index);
+  const auto pointer = _.FindDef(pointer_id);
+  if (!pointer ||
+      ((_.addressing_model() == spv::AddressingModel::Logical) &&
+       ((!_.features().variable_pointers &&
+         !spvOpcodeReturnsLogicalPointer(pointer->opcode())) ||
+        (_.features().variable_pointers &&
+         !spvOpcodeReturnsLogicalVariablePointer(pointer->opcode()))))) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opname << " Pointer <id> " << _.getIdName(pointer_id)
+           << " is not a logical pointer.";
+  }
+
+  const auto pointer_type_id = pointer->type_id();
+  const auto pointer_type = _.FindDef(pointer_type_id);
+  if (!pointer_type || pointer_type->opcode() != spv::Op::OpTypePointer) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opname << " type for pointer <id> " << _.getIdName(pointer_id)
+           << " is not a pointer type.";
+  }
+
+  const auto storage_class_index = 1u;
+  const auto storage_class =
+      pointer_type->GetOperandAs<spv::StorageClass>(storage_class_index);
+
+  if (storage_class != spv::StorageClass::Workgroup &&
+      storage_class != spv::StorageClass::StorageBuffer &&
+      storage_class != spv::StorageClass::PhysicalStorageBuffer) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opname << " storage class for pointer type <id> "
+           << _.getIdName(pointer_type_id)
+           << " is not Workgroup or StorageBuffer.";
+  }
+
+  const auto pointee_id = pointer_type->GetOperandAs<uint32_t>(2);
+  const auto pointee_type = _.FindDef(pointee_id);
+  if (!pointee_type ||
+      (pointee_type->opcode() != spv::Op::OpTypeArray &&
+       pointee_type->opcode() != spv::Op::OpTypeRuntimeArray)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opname << " Pointer <id> " << _.getIdName(pointer->id())
+           << "s Type must be an array type.";
+  }
+
+  const auto array_elem_type_id = pointee_type->GetOperandAs<uint32_t>(1);
+  auto array_elem_type = _.FindDef(array_elem_type_id);
+  if (!array_elem_type || !(_.IsIntScalarOrVectorType(array_elem_type_id) ||
+                            _.IsFloatScalarOrVectorType(array_elem_type_id))) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opname << " Pointer <id> " << _.getIdName(pointer->id())
+           << "s Type must be an array of scalar or vector type.";
+  }
+
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateCooperativeVectorLoadStoreNV(ValidationState_t& _,
+                                                  const Instruction* inst) {
+  uint32_t type_id;
+  const char* opname;
+  if (inst->opcode() == spv::Op::OpCooperativeVectorLoadNV) {
+    type_id = inst->type_id();
+    opname = "spv::Op::OpCooperativeVectorLoadNV";
+  } else {
+    // get Object operand's type
+    type_id = _.FindDef(inst->GetOperandAs<uint32_t>(2))->type_id();
+    opname = "spv::Op::OpCooperativeVectorStoreNV";
+  }
+
+  auto vector_type = _.FindDef(type_id);
+
+  if (vector_type->opcode() != spv::Op::OpTypeVectorIdEXT) {
+    if (inst->opcode() == spv::Op::OpCooperativeVectorLoadNV) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "spv::Op::OpCooperativeVectorLoadNV Result Type <id> "
+             << _.getIdName(type_id) << " is not a cooperative vector type.";
+    } else {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "spv::Op::OpCooperativeVectorStoreNV Object type <id> "
+             << _.getIdName(type_id) << " is not a cooperative vector type.";
+    }
+  }
+
+  const auto pointer_index =
+      (inst->opcode() == spv::Op::OpCooperativeVectorLoadNV) ? 2u : 0u;
+
+  const auto offset_index =
+      (inst->opcode() == spv::Op::OpCooperativeVectorLoadNV) ? 3u : 1u;
+
+  if (auto error =
+          ValidateCooperativeVectorPointer(_, inst, opname, pointer_index)) {
+    return error;
+  }
+
+  if (auto error =
+          ValidateInt32Or64Operand(_, inst, offset_index, opname, "Offset")) {
+    return error;
+  }
+
+  const auto memory_access_index =
+      (inst->opcode() == spv::Op::OpCooperativeVectorLoadNV) ? 4u : 3u;
+  if (inst->operands().size() > memory_access_index) {
+    if (auto error = CheckMemoryAccess(_, inst, memory_access_index))
+      return error;
+  }
+
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateCooperativeVectorOuterProductNV(ValidationState_t& _,
+                                                     const Instruction* inst) {
+  const auto pointer_index = 0u;
+  const auto opcode_name =
+      "spv::Op::OpCooperativeVectorOuterProductAccumulateNV";
+
+  if (auto error = ValidateCooperativeVectorPointer(_, inst, opcode_name,
+                                                    pointer_index)) {
+    return error;
+  }
+
+  auto type_id = _.FindDef(inst->GetOperandAs<uint32_t>(2))->type_id();
+  auto a_type = _.FindDef(type_id);
+
+  if (a_type->opcode() != spv::Op::OpTypeVectorIdEXT) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opcode_name << " A type <id> " << _.getIdName(type_id)
+           << " is not a cooperative vector type.";
+  }
+
+  type_id = _.FindDef(inst->GetOperandAs<uint32_t>(3))->type_id();
+  auto b_type = _.FindDef(type_id);
+
+  if (b_type->opcode() != spv::Op::OpTypeVectorIdEXT) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opcode_name << " B type <id> " << _.getIdName(type_id)
+           << " is not a cooperative vector type.";
+  }
+
+  const auto a_component_type_id = a_type->GetOperandAs<uint32_t>(1);
+  const auto b_component_type_id = b_type->GetOperandAs<uint32_t>(1);
+
+  if (a_component_type_id != b_component_type_id) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opcode_name << " A and B component types "
+           << _.getIdName(a_component_type_id) << " and "
+           << _.getIdName(b_component_type_id) << " do not match.";
+  }
+
+  if (auto error =
+          ValidateInt32Or64Operand(_, inst, 1, opcode_name, "Offset")) {
+    return error;
+  }
+
+  if (auto error =
+          ValidateInt32Operand(_, inst, 4, opcode_name, "MemoryLayout")) {
+    return error;
+  }
+
+  if (auto error = ValidateInt32Operand(_, inst, 5, opcode_name,
+                                        "MatrixInterpretation")) {
+    return error;
+  }
+
+  if (inst->operands().size() > 6) {
+    if (auto error =
+            ValidateInt32Operand(_, inst, 6, opcode_name, "MatrixStride")) {
+      return error;
+    }
+  }
+
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateCooperativeVectorReduceSumNV(ValidationState_t& _,
+                                                  const Instruction* inst) {
+  const auto opcode_name = "spv::Op::OpCooperativeVectorReduceSumAccumulateNV";
+  const auto pointer_index = 0u;
+
+  if (auto error = ValidateCooperativeVectorPointer(_, inst, opcode_name,
+                                                    pointer_index)) {
+    return error;
+  }
+
+  auto type_id = _.FindDef(inst->GetOperandAs<uint32_t>(2))->type_id();
+  auto v_type = _.FindDef(type_id);
+
+  if (v_type->opcode() != spv::Op::OpTypeVectorIdEXT) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opcode_name << " V type <id> " << _.getIdName(type_id)
+           << " is not a cooperative vector type.";
+  }
+
+  if (auto error =
+          ValidateInt32Or64Operand(_, inst, 1, opcode_name, "Offset")) {
+    return error;
+  }
+
+  return SPV_SUCCESS;
+}
+
+bool InterpretationIsPacked(spv::ComponentType interp) {
+  switch (interp) {
+    case spv::ComponentType::SignedInt8PackedNV:
+    case spv::ComponentType::UnsignedInt8PackedNV:
+      return true;
+    default:
+      return false;
+  }
+}
+
+using std::get;
+
+spv_result_t ValidateCooperativeVectorMatrixMulNV(ValidationState_t& _,
+                                                  const Instruction* inst) {
+  const bool has_bias =
+      inst->opcode() == spv::Op::OpCooperativeVectorMatrixMulAddNV;
+  const auto opcode_name = has_bias
+                               ? "spv::Op::OpCooperativeVectorMatrixMulAddNV"
+                               : "spv::Op::OpCooperativeVectorMatrixMulNV";
+
+  const auto bias_offset = has_bias ? 3 : 0;
+
+  const auto result_type_index = 0u;
+  const auto input_index = 2u;
+  const auto input_interpretation_index = 3u;
+  const auto matrix_index = 4u;
+  const auto matrix_offset_index = 5u;
+  const auto matrix_interpretation_index = 6u;
+  const auto bias_index = 7u;
+  const auto bias_offset_index = 8u;
+  const auto bias_interpretation_index = 9u;
+  const auto m_index = 7u + bias_offset;
+  const auto k_index = 8u + bias_offset;
+  const auto memory_layout_index = 9u + bias_offset;
+  const auto transpose_index = 10u + bias_offset;
+
+  const auto result_type_id = inst->GetOperandAs<uint32_t>(result_type_index);
+  const auto input_id = inst->GetOperandAs<uint32_t>(input_index);
+  const auto input_interpretation_id =
+      inst->GetOperandAs<uint32_t>(input_interpretation_index);
+  const auto matrix_interpretation_id =
+      inst->GetOperandAs<uint32_t>(matrix_interpretation_index);
+  const auto bias_interpretation_id =
+      inst->GetOperandAs<uint32_t>(bias_interpretation_index);
+  const auto m_id = inst->GetOperandAs<uint32_t>(m_index);
+  const auto k_id = inst->GetOperandAs<uint32_t>(k_index);
+  const auto memory_layout_id =
+      inst->GetOperandAs<uint32_t>(memory_layout_index);
+  const auto transpose_id = inst->GetOperandAs<uint32_t>(transpose_index);
+
+  if (auto error = ValidateCooperativeVectorPointer(_, inst, opcode_name,
+                                                    matrix_index)) {
+    return error;
+  }
+
+  if (inst->opcode() == spv::Op::OpCooperativeVectorMatrixMulAddNV) {
+    if (auto error = ValidateCooperativeVectorPointer(_, inst, opcode_name,
+                                                      bias_index)) {
+      return error;
+    }
+  }
+
+  const auto result_type = _.FindDef(result_type_id);
+
+  if (result_type->opcode() != spv::Op::OpTypeVectorIdEXT) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opcode_name << " result type <id> " << _.getIdName(result_type_id)
+           << " is not a cooperative vector type.";
+  }
+
+  const auto result_component_type_id = result_type->GetOperandAs<uint32_t>(1u);
+  if (!_.IsIntScalarType(result_component_type_id, 32) &&
+      !_.IsFloatScalarType(result_component_type_id, 32) &&
+      !_.IsFloatScalarType(result_component_type_id, 16)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opcode_name << " result component type <id> "
+           << _.getIdName(result_component_type_id)
+           << " is not a 32 bit int or 16/32 bit float.";
+  }
+
+  const auto m_eval = _.EvalInt32IfConst(m_id);
+  const auto rc_eval =
+      _.EvalInt32IfConst(result_type->GetOperandAs<uint32_t>(2u));
+  if (get<1>(m_eval) && get<1>(rc_eval) && get<2>(m_eval) != get<2>(rc_eval)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opcode_name << " result type number of components "
+           << get<2>(rc_eval) << " does not match M " << get<2>(m_eval);
+  }
+
+  const auto k_eval = _.EvalInt32IfConst(k_id);
+
+  const auto input = _.FindDef(input_id);
+  const auto input_type = _.FindDef(input->type_id());
+  const auto input_num_components_id = input_type->GetOperandAs<uint32_t>(2u);
+
+  auto input_interp_eval = _.EvalInt32IfConst(input_interpretation_id);
+  if (get<1>(input_interp_eval) &&
+      !InterpretationIsPacked(spv::ComponentType{get<2>(input_interp_eval)})) {
+    const auto inc_eval = _.EvalInt32IfConst(input_num_components_id);
+    if (get<1>(inc_eval) && get<1>(k_eval) &&
+        get<2>(inc_eval) != get<2>(k_eval)) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << opcode_name << " input number of components "
+             << get<2>(inc_eval) << " does not match K " << get<2>(k_eval);
+    }
+  }
+
+  if (!_.IsBoolScalarType(_.FindDef(transpose_id)->type_id())) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << opcode_name << " Transpose <id> " << _.getIdName(transpose_id)
+           << " is not a scalar boolean.";
+  }
+
+  const auto check_constant = [&](uint32_t id,
+                                  const char* operand_name) -> spv_result_t {
+    if (!spvOpcodeIsConstant(_.GetIdOpcode(id))) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << opcode_name << " " << operand_name << " <id> "
+             << _.getIdName(id) << " is not a constant instruction.";
+    }
+    return SPV_SUCCESS;
+  };
+
+  if (auto error =
+          check_constant(input_interpretation_id, "InputInterpretation")) {
+    return error;
+  }
+  if (auto error =
+          check_constant(matrix_interpretation_id, "MatrixInterpretation")) {
+    return error;
+  }
+  if (has_bias) {
+    if (auto error =
+            check_constant(bias_interpretation_id, "BiasInterpretation")) {
+      return error;
+    }
+  }
+  if (auto error = check_constant(m_id, "M")) {
+    return error;
+  }
+  if (auto error = check_constant(k_id, "K")) {
+    return error;
+  }
+  if (auto error = check_constant(memory_layout_id, "MemoryLayout")) {
+    return error;
+  }
+  if (auto error = check_constant(transpose_id, "Transpose")) {
+    return error;
+  }
+
+  if (auto error = ValidateInt32Operand(_, inst, input_interpretation_index,
+                                        opcode_name, "InputInterpretation")) {
+    return error;
+  }
+  if (auto error = ValidateInt32Operand(_, inst, matrix_interpretation_index,
+                                        opcode_name, "MatrixInterpretation")) {
+    return error;
+  }
+  if (has_bias) {
+    if (auto error = ValidateInt32Operand(_, inst, bias_interpretation_index,
+                                          opcode_name, "BiasInterpretation")) {
+      return error;
+    }
+  }
+  if (auto error = ValidateInt32Operand(_, inst, m_index, opcode_name, "M")) {
+    return error;
+  }
+  if (auto error = ValidateInt32Operand(_, inst, k_index, opcode_name, "K")) {
+    return error;
+  }
+  if (auto error = ValidateInt32Operand(_, inst, memory_layout_index,
+                                        opcode_name, "MemoryLayout")) {
+    return error;
+  }
+
+  if (auto error = ValidateInt32Or64Operand(_, inst, matrix_offset_index,
+                                            opcode_name, "MatrixOffset")) {
+    return error;
+  }
+  if (has_bias) {
+    if (auto error = ValidateInt32Or64Operand(_, inst, bias_offset_index,
+                                              opcode_name, "BiasOffset")) {
+      return error;
+    }
+  }
+
+  return SPV_SUCCESS;
+}
+
 spv_result_t ValidatePtrComparison(ValidationState_t& _,
                                    const Instruction* inst) {
-  if (_.addressing_model() == spv::AddressingModel::Logical &&
+  const auto op1 = _.FindDef(inst->GetOperandAs<uint32_t>(2u));
+  const auto op2 = _.FindDef(inst->GetOperandAs<uint32_t>(3u));
+  const auto op1_type = _.FindDef(op1->type_id());
+  const auto op2_type = _.FindDef(op2->type_id());
+  spv::StorageClass sc = op1_type->GetOperandAs<spv::StorageClass>(1u);
+  if ((_.addressing_model() == spv::AddressingModel::Logical ||
+       _.addressing_model() == spv::AddressingModel::PhysicalStorageBuffer64) &&
+      sc != spv::StorageClass::PhysicalStorageBuffer &&
       !_.features().variable_pointers) {
     return _.diag(SPV_ERROR_INVALID_ID, inst)
-           << "Instruction cannot for logical addressing model be used without "
+           << "Instruction on logical pointers cannot be used without "
               "a variable pointers capability";
   }
 
@@ -2420,20 +3627,40 @@ spv_result_t ValidatePtrComparison(ValidationState_t& _,
     }
   }
 
-  const auto op1 = _.FindDef(inst->GetOperandAs<uint32_t>(2u));
-  const auto op2 = _.FindDef(inst->GetOperandAs<uint32_t>(3u));
-  if (!op1 || !op2 || op1->type_id() != op2->type_id()) {
-    return _.diag(SPV_ERROR_INVALID_ID, inst)
-           << "The types of Operand 1 and Operand 2 must match";
-  }
-  const auto op1_type = _.FindDef(op1->type_id());
   if (!op1_type || (op1_type->opcode() != spv::Op::OpTypePointer &&
                     op1_type->opcode() != spv::Op::OpTypeUntypedPointerKHR)) {
     return _.diag(SPV_ERROR_INVALID_ID, inst)
            << "Operand type must be a pointer";
   }
 
-  spv::StorageClass sc = op1_type->GetOperandAs<spv::StorageClass>(1u);
+  if (!op2_type || (op2_type->opcode() != spv::Op::OpTypePointer &&
+                    op2_type->opcode() != spv::Op::OpTypeUntypedPointerKHR)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "Operand type must be a pointer";
+  }
+
+  if (inst->opcode() == spv::Op::OpPtrDiff) {
+    if (op1->type_id() != op2->type_id()) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "The types of Operand 1 and Operand 2 must match";
+    }
+  } else {
+    const auto either_untyped =
+        op1_type->opcode() == spv::Op::OpTypeUntypedPointerKHR ||
+        op2_type->opcode() == spv::Op::OpTypeUntypedPointerKHR;
+    if (either_untyped) {
+      const auto sc1 = op1_type->GetOperandAs<spv::StorageClass>(1);
+      const auto sc2 = op2_type->GetOperandAs<spv::StorageClass>(1);
+      if (sc1 != sc2) {
+        return _.diag(SPV_ERROR_INVALID_ID, inst)
+               << "Pointer storage classes must match";
+      }
+    } else if (op1->type_id() != op2->type_id()) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "The types of Operand 1 and Operand 2 must match";
+    }
+  }
+
   if (_.addressing_model() == spv::AddressingModel::Logical) {
     if (sc != spv::StorageClass::Workgroup &&
         sc != spv::StorageClass::StorageBuffer) {
@@ -2455,69 +3682,233 @@ spv_result_t ValidatePtrComparison(ValidationState_t& _,
   return SPV_SUCCESS;
 }
 
+spv_result_t ValidatePredicatedLoadINTEL(ValidationState_t& _,
+                                         const Instruction* inst) {
+  const auto result_type_id = inst->type_id();
+  if (!_.IsIntScalarOrVectorType(result_type_id) &&
+      !_.IsFloatScalarOrVectorType(result_type_id)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "OpPredicatedLoadINTEL Result Type <id> "
+           << _.getIdName(result_type_id)
+           << " must be a scalar or vector of numerical type.";
+  }
+
+  const auto pointer_id = inst->GetOperandAs<uint32_t>(2);
+  const auto pointer = _.FindDef(pointer_id);
+  if (!pointer ||
+      ((_.addressing_model() == spv::AddressingModel::Logical) &&
+       ((!_.features().variable_pointers &&
+         !spvOpcodeReturnsLogicalPointer(pointer->opcode())) ||
+        (_.features().variable_pointers &&
+         !spvOpcodeReturnsLogicalVariablePointer(pointer->opcode()))))) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "OpPredicatedLoadINTEL Pointer <id> " << _.getIdName(pointer_id)
+           << " is not a logical pointer.";
+  }
+
+  const auto pointer_type = _.FindDef(pointer->type_id());
+  if (!pointer_type ||
+      (pointer_type->opcode() != spv::Op::OpTypePointer &&
+       pointer_type->opcode() != spv::Op::OpTypeUntypedPointerKHR)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "OpPredicatedLoadINTEL type for pointer <id> "
+           << _.getIdName(pointer_id) << " is not a pointer type.";
+  }
+
+  if (pointer_type->opcode() == spv::Op::OpTypePointer) {
+    const auto pointee_type =
+        _.FindDef(pointer_type->GetOperandAs<uint32_t>(2));
+    if (!pointee_type || result_type_id != pointee_type->id()) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "OpPredicatedLoadINTEL Result Type <id> "
+             << _.getIdName(result_type_id) << " does not match Pointer <id> "
+             << _.getIdName(pointer->id()) << "s type.";
+    }
+  }
+
+  const auto predicate_id = inst->GetOperandAs<uint32_t>(3);
+  const auto predicate = _.FindDef(predicate_id);
+  if (!predicate || !_.IsBoolScalarType(predicate->type_id())) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "OpPredicatedLoadINTEL Predicate <id> "
+           << _.getIdName(predicate_id) << " must be a Boolean scalar.";
+  }
+
+  const auto default_value_id = inst->GetOperandAs<uint32_t>(4);
+  const auto default_value = _.FindDef(default_value_id);
+  if (!default_value || default_value->type_id() != result_type_id) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "OpPredicatedLoadINTEL Default Value <id> "
+           << _.getIdName(default_value_id)
+           << " type does not match Result Type.";
+  }
+
+  if (inst->operands().size() > 5) {
+    const auto mask = inst->GetOperandAs<uint32_t>(5);
+    if (mask & uint32_t(spv::MemoryAccessMask::Volatile)) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "OpPredicatedLoadINTEL does not allow the Volatile memory "
+                "operand.";
+    }
+  }
+
+  if (auto error = CheckMemoryAccess(_, inst, 5)) return error;
+
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidatePredicatedStoreINTEL(ValidationState_t& _,
+                                          const Instruction* inst) {
+  const auto pointer_id = inst->GetOperandAs<uint32_t>(0);
+  const auto pointer = _.FindDef(pointer_id);
+  if (!pointer ||
+      (_.addressing_model() == spv::AddressingModel::Logical &&
+       ((!_.features().variable_pointers &&
+         !spvOpcodeReturnsLogicalPointer(pointer->opcode())) ||
+        (_.features().variable_pointers &&
+         !spvOpcodeReturnsLogicalVariablePointer(pointer->opcode()))))) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "OpPredicatedStoreINTEL Pointer <id> " << _.getIdName(pointer_id)
+           << " is not a logical pointer.";
+  }
+
+  const auto pointer_type = _.FindDef(pointer->type_id());
+  if (!pointer_type ||
+      (pointer_type->opcode() != spv::Op::OpTypePointer &&
+       pointer_type->opcode() != spv::Op::OpTypeUntypedPointerKHR)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "OpPredicatedStoreINTEL type for pointer <id> "
+           << _.getIdName(pointer_id) << " is not a pointer type.";
+  }
+
+  const auto object_id = inst->GetOperandAs<uint32_t>(1);
+  const auto object = _.FindDef(object_id);
+  if (!object || !object->type_id()) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "OpPredicatedStoreINTEL Object <id> " << _.getIdName(object_id)
+           << " is not an object.";
+  }
+
+  const auto object_type_id = object->type_id();
+  if (!_.IsIntScalarOrVectorType(object_type_id) &&
+      !_.IsFloatScalarOrVectorType(object_type_id)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "OpPredicatedStoreINTEL Object <id> " << _.getIdName(object_id)
+           << " type must be a scalar or vector of numerical type.";
+  }
+
+  if (pointer_type->opcode() == spv::Op::OpTypePointer) {
+    const auto pointee_type =
+        _.FindDef(pointer_type->GetOperandAs<uint32_t>(2));
+    if (!pointee_type || pointee_type->id() != object_type_id) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "OpPredicatedStoreINTEL Pointer <id> "
+             << _.getIdName(pointer_id) << "s type does not match Object <id> "
+             << _.getIdName(object->id()) << "s type.";
+    }
+  }
+
+  const auto predicate_id = inst->GetOperandAs<uint32_t>(2);
+  const auto predicate = _.FindDef(predicate_id);
+  if (!predicate || !_.IsBoolScalarType(predicate->type_id())) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "OpPredicatedStoreINTEL Predicate <id> "
+           << _.getIdName(predicate_id) << " must be a Boolean scalar.";
+  }
+
+  if (inst->operands().size() > 3) {
+    const auto mask = inst->GetOperandAs<uint32_t>(3);
+    if (mask & uint32_t(spv::MemoryAccessMask::Volatile)) {
+      return _.diag(SPV_ERROR_INVALID_ID, inst)
+             << "OpPredicatedStoreINTEL does not allow the Volatile memory "
+                "operand.";
+    }
+  }
+
+  if (auto error = CheckMemoryAccess(_, inst, 3)) return error;
+
+  return SPV_SUCCESS;
+}
+
 }  // namespace
 
 spv_result_t MemoryPass(ValidationState_t& _, const Instruction* inst) {
   switch (inst->opcode()) {
     case spv::Op::OpVariable:
     case spv::Op::OpUntypedVariableKHR:
-      if (auto error = ValidateVariable(_, inst)) return error;
-      break;
+      return ValidateVariable(_, inst);
+    case spv::Op::OpBufferPointerEXT:
+      return ValidateBufferPointerEXT(_, inst);
     case spv::Op::OpLoad:
-      if (auto error = ValidateLoad(_, inst)) return error;
-      break;
+      return ValidateLoad(_, inst);
     case spv::Op::OpStore:
-      if (auto error = ValidateStore(_, inst)) return error;
-      break;
+      return ValidateStore(_, inst);
     case spv::Op::OpCopyMemory:
     case spv::Op::OpCopyMemorySized:
-      if (auto error = ValidateCopyMemory(_, inst)) return error;
-      break;
+      return ValidateCopyMemory(_, inst);
     case spv::Op::OpPtrAccessChain:
     case spv::Op::OpUntypedPtrAccessChainKHR:
     case spv::Op::OpUntypedInBoundsPtrAccessChainKHR:
-      if (auto error = ValidatePtrAccessChain(_, inst)) return error;
-      break;
+      return ValidatePtrAccessChain(_, inst);
     case spv::Op::OpAccessChain:
     case spv::Op::OpInBoundsAccessChain:
     case spv::Op::OpInBoundsPtrAccessChain:
     case spv::Op::OpUntypedAccessChainKHR:
     case spv::Op::OpUntypedInBoundsAccessChainKHR:
-      if (auto error = ValidateAccessChain(_, inst)) return error;
-      break;
+      return ValidateAccessChain(_, inst);
     case spv::Op::OpRawAccessChainNV:
-      if (auto error = ValidateRawAccessChain(_, inst)) return error;
-      break;
+      return ValidateRawAccessChain(_, inst);
     case spv::Op::OpArrayLength:
     case spv::Op::OpUntypedArrayLengthKHR:
-      if (auto error = ValidateArrayLength(_, inst)) return error;
-      break;
+      return ValidateArrayLength(_, inst);
     case spv::Op::OpCooperativeMatrixLoadNV:
     case spv::Op::OpCooperativeMatrixStoreNV:
-      if (auto error = ValidateCooperativeMatrixLoadStoreNV(_, inst))
-        return error;
-      break;
+      return ValidateCooperativeMatrixLoadStoreNV(_, inst);
     case spv::Op::OpCooperativeMatrixLengthKHR:
+      return ValidateCooperativeMatrixLength(_, inst, true);
     case spv::Op::OpCooperativeMatrixLengthNV:
-      if (auto error = ValidateCooperativeMatrixLengthNV(_, inst)) return error;
-      break;
+      return ValidateCooperativeMatrixLength(_, inst, false);
+    case spv::Op::OpCooperativeMatrixGetCoordinateEXT:
+      return ValidateCooperativeMatrixGetCoordinateEXT(_, inst);
     case spv::Op::OpCooperativeMatrixLoadKHR:
     case spv::Op::OpCooperativeMatrixStoreKHR:
-      if (auto error = ValidateCooperativeMatrixLoadStoreKHR(_, inst))
-        return error;
-      break;
+      return ValidateCooperativeMatrixLoadStoreKHR(_, inst);
     case spv::Op::OpCooperativeMatrixLoadTensorNV:
     case spv::Op::OpCooperativeMatrixStoreTensorNV:
-      if (auto error = ValidateCooperativeMatrixLoadStoreTensorNV(_, inst))
-        return error;
-      break;
+      return ValidateCooperativeMatrixLoadStoreTensorNV(_, inst);
+    case spv::Op::OpCooperativeVectorLoadNV:
+    case spv::Op::OpCooperativeVectorStoreNV:
+      return ValidateCooperativeVectorLoadStoreNV(_, inst);
+    case spv::Op::OpCooperativeVectorOuterProductAccumulateNV:
+      return ValidateCooperativeVectorOuterProductNV(_, inst);
+    case spv::Op::OpCooperativeVectorReduceSumAccumulateNV:
+      return ValidateCooperativeVectorReduceSumNV(_, inst);
+    case spv::Op::OpCooperativeVectorMatrixMulNV:
+    case spv::Op::OpCooperativeVectorMatrixMulAddNV:
+      return ValidateCooperativeVectorMatrixMulNV(_, inst);
+    case spv::Op::OpPredicatedLoadINTEL:
+      return ValidatePredicatedLoadINTEL(_, inst);
+    case spv::Op::OpPredicatedStoreINTEL:
+      return ValidatePredicatedStoreINTEL(_, inst);
     case spv::Op::OpPtrEqual:
     case spv::Op::OpPtrNotEqual:
     case spv::Op::OpPtrDiff:
-      if (auto error = ValidatePtrComparison(_, inst)) return error;
-      break;
+      return ValidatePtrComparison(_, inst);
     case spv::Op::OpImageTexelPointer:
     case spv::Op::OpGenericPtrMemSemantics:
+      break;  // no validation currently
+    case spv::Op::OpSpecConstantOp: {
+      switch (inst->GetOperandAs<spv::Op>(2u)) {
+        case spv::Op::OpCooperativeMatrixLengthKHR:
+          return ValidateCooperativeMatrixLength(_, inst, true, 3);
+        case spv::Op::OpCooperativeMatrixLengthNV:
+          return ValidateCooperativeMatrixLength(_, inst, false, 3);
+        // TODO - Add AccesChains
+        default:
+          break;
+      }
+    }
+
     default:
       break;
   }

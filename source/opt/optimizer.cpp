@@ -18,6 +18,7 @@
 #include <charconv>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -148,7 +149,9 @@ Optimizer& Optimizer::RegisterLegalizationPasses(bool preserve_interface) {
           .RegisterPass(CreateLocalSingleStoreElimPass())
           .RegisterPass(CreateAggressiveDCEPass(preserve_interface))
           .RegisterPass(CreateLocalMultiStoreElimPass())
+          .RegisterPass(CreateCombineAccessChainsPass())
           .RegisterPass(CreateAggressiveDCEPass(preserve_interface))
+          .RegisterPass(CreateLegalizeMultidimArrayPass())
           // Propagate constants to get as many constant conditions on branches
           // as possible.
           .RegisterPass(CreateCCPPass())
@@ -188,7 +191,7 @@ Optimizer& Optimizer::RegisterPerformancePasses(bool preserve_interface) {
       .RegisterPass(CreateLocalSingleBlockLoadStoreElimPass())
       .RegisterPass(CreateLocalSingleStoreElimPass())
       .RegisterPass(CreateAggressiveDCEPass(preserve_interface))
-      .RegisterPass(CreateScalarReplacementPass())
+      .RegisterPass(CreateScalarReplacementPass(0))
       .RegisterPass(CreateLocalAccessChainConvertPass())
       .RegisterPass(CreateLocalSingleBlockLoadStoreElimPass())
       .RegisterPass(CreateLocalSingleStoreElimPass())
@@ -202,7 +205,7 @@ Optimizer& Optimizer::RegisterPerformancePasses(bool preserve_interface) {
       .RegisterPass(CreateRedundancyEliminationPass())
       .RegisterPass(CreateCombineAccessChainsPass())
       .RegisterPass(CreateSimplificationPass())
-      .RegisterPass(CreateScalarReplacementPass())
+      .RegisterPass(CreateScalarReplacementPass(0))
       .RegisterPass(CreateLocalAccessChainConvertPass())
       .RegisterPass(CreateLocalSingleBlockLoadStoreElimPass())
       .RegisterPass(CreateLocalSingleStoreElimPass())
@@ -398,9 +401,11 @@ bool Optimizer::RegisterPassFromFlag(const std::string& flag,
     RegisterPass(CreateFoldSpecConstantOpAndCompositePass());
   } else if (pass_name == "loop-unswitch") {
     RegisterPass(CreateLoopUnswitchPass());
+  } else if (pass_name == "legalize-multidim-array") {
+    RegisterPass(CreateLegalizeMultidimArrayPass());
   } else if (pass_name == "scalar-replacement") {
     if (pass_args.size() == 0) {
-      RegisterPass(CreateScalarReplacementPass());
+      RegisterPass(CreateScalarReplacementPass(0));
     } else {
       int limit = -1;
       if (pass_args.find_first_not_of("0123456789") == std::string::npos) {
@@ -460,6 +465,8 @@ bool Optimizer::RegisterPassFromFlag(const std::string& flag,
     RegisterPass(CreateReplaceInvalidOpcodePass());
   } else if (pass_name == "convert-relaxed-to-half") {
     RegisterPass(CreateConvertRelaxedToHalfPass());
+  } else if (pass_name == "convert-to-untyped") {
+    RegisterPass(CreateConvertToUntypedPass());
   } else if (pass_name == "relax-float-ops") {
     RegisterPass(CreateRelaxFloatOpsPass());
   } else if (pass_name == "simplify-instructions") {
@@ -636,6 +643,12 @@ bool Optimizer::RegisterPassFromFlag(const std::string& flag,
     }
   } else if (pass_name == "trim-capabilities") {
     RegisterPass(CreateTrimCapabilitiesPass());
+  } else if (pass_name == "split-combined-image-sampler") {
+    RegisterPass(CreateSplitCombinedImageSamplerPass());
+  } else if (pass_name == "resolve-binding-conflicts") {
+    RegisterPass(CreateResolveBindingConflictsPass());
+  } else if (pass_name == "canonicalize-ids") {
+    RegisterPass(CreateCanonicalizeIdsPass());
   } else {
     Errorf(consumer(), nullptr, {},
            "Unknown flag '--%s'. Use --help for a list of valid flags",
@@ -708,7 +721,8 @@ bool Optimizer::Run(const uint32_t* original_binary,
       !context->module()->ContainsDebugInfo()) {
     std::vector<uint32_t> optimized_binary_with_nop;
     context->module()->ToBinary(&optimized_binary_with_nop,
-                                /* skip_nop = */ false);
+                                /* skip_nop = */ false,
+                                /* filter_duplicate_decorations = */ false);
     assert(optimized_binary_with_nop.size() == original_binary_size &&
            "Binary size unexpectedly changed despite the optimizer saying "
            "there was no change");
@@ -954,6 +968,11 @@ Optimizer::PassToken CreateLoopUnswitchPass() {
       MakeUnique<opt::LoopUnswitchPass>());
 }
 
+Optimizer::PassToken CreateLegalizeMultidimArrayPass() {
+  return MakeUnique<Optimizer::PassToken::Impl>(
+      MakeUnique<opt::LegalizeMultidimArrayPass>());
+}
+
 Optimizer::PassToken CreateRedundancyEliminationPass() {
   return MakeUnique<Optimizer::PassToken::Impl>(
       MakeUnique<opt::RedundancyEliminationPass>());
@@ -1036,6 +1055,11 @@ Optimizer::PassToken CreateUpgradeMemoryModelPass() {
 Optimizer::PassToken CreateConvertRelaxedToHalfPass() {
   return MakeUnique<Optimizer::PassToken::Impl>(
       MakeUnique<opt::ConvertToHalfPass>());
+}
+
+Optimizer::PassToken CreateConvertToUntypedPass() {
+  return MakeUnique<Optimizer::PassToken::Impl>(
+      MakeUnique<opt::ConvertToUntyped>());
 }
 
 Optimizer::PassToken CreateRelaxFloatOpsPass() {
@@ -1185,6 +1209,21 @@ Optimizer::PassToken CreateModifyMaximalReconvergencePass(bool add) {
 Optimizer::PassToken CreateOpExtInstWithForwardReferenceFixupPass() {
   return MakeUnique<Optimizer::PassToken::Impl>(
       MakeUnique<opt::OpExtInstWithForwardReferenceFixupPass>());
+}
+
+Optimizer::PassToken CreateSplitCombinedImageSamplerPass() {
+  return MakeUnique<Optimizer::PassToken::Impl>(
+      MakeUnique<opt::SplitCombinedImageSamplerPass>());
+}
+
+Optimizer::PassToken CreateResolveBindingConflictsPass() {
+  return MakeUnique<Optimizer::PassToken::Impl>(
+      MakeUnique<opt::ResolveBindingConflictsPass>());
+}
+
+Optimizer::PassToken CreateCanonicalizeIdsPass() {
+  return MakeUnique<Optimizer::PassToken::Impl>(
+      MakeUnique<opt::CanonicalizeIdsPass>());
 }
 
 }  // namespace spvtools

@@ -1,4 +1,6 @@
 // Copyright (c) 2018 Google Inc.
+// Modifications Copyright (C) 2024 Advanced Micro Devices, Inc. All rights
+// reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -597,8 +599,37 @@ TEST_F(ValidateMemory, ArrayLenResultNotIntType) {
       getDiagnosticString(),
       HasSubstr(
           "The Result Type of OpArrayLength <id> '10[%10]' must be OpTypeInt "
-          "with width 32 and signedness 0.\n  %10 = OpArrayLength %float %9 "
+          "with width 32 or 64 and signedness 0.\n  %10 = OpArrayLength %float "
+          "%9 "
           "0\n"));
+}
+
+TEST_F(ValidateMemory, ArrayLenResultUnsizedPointer) {
+  std::string spirv = R"(
+               OpCapability ClipDistance
+               OpMemoryModel Logical GLSL450
+               OpName %65312 "arrayLen"
+       %void = OpTypeVoid
+          %8 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v2float = OpTypeVector %float 2
+  %_struct_5 = OpTypeStruct %v2float
+%_ptr_Uniform__struct_5 = OpTypePointer Uniform %_struct_5
+          %6 = OpVariable %_ptr_Uniform__struct_5 Uniform
+%_ptr_Uniform_v2float = OpTypePointer Uniform %v2float
+    %2105376 = OpFunction %void None %8
+       %8224 = OpLabel
+      %65312 = OpArrayLength %_ptr_Uniform_v2float %6 538976288
+               OpUnreachable
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv.c_str());
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("The Result Type of OpArrayLength <id> '1[%arrayLen]' must be "
+                "OpTypeInt with width 32 or 64 and signedness 0."));
 }
 
 TEST_F(ValidateMemory, ArrayLenResultNot32bits) {
@@ -630,7 +661,8 @@ TEST_F(ValidateMemory, ArrayLenResultNot32bits) {
       getDiagnosticString(),
       HasSubstr(
           "The Result Type of OpArrayLength <id> '11[%11]' must be OpTypeInt "
-          "with width 32 and signedness 0.\n  %11 = OpArrayLength %ushort %10 "
+          "with width 32 or 64 and signedness 0.\n  %11 = OpArrayLength "
+          "%ushort %10 "
           "0\n"));
 }
 
@@ -662,7 +694,8 @@ TEST_F(ValidateMemory, ArrayLenResultSigned) {
       getDiagnosticString(),
       HasSubstr(
           "The Result Type of OpArrayLength <id> '11[%11]' must be OpTypeInt "
-          "with width 32 and signedness 0.\n  %11 = OpArrayLength %int %10 "
+          "with width 32 or 64 and signedness 0.\n  %11 = OpArrayLength %int "
+          "%10 "
           "0\n"));
 }
 
@@ -1816,6 +1849,68 @@ OpFunctionEnd
       HasSubstr("Memory accesses with PhysicalStorageBuffer must use Aligned"));
 }
 
+TEST_F(ValidateMemory, PSBStoreAlignedZero) {
+  const std::string body = R"(
+OpCapability PhysicalStorageBufferAddresses
+OpCapability Shader
+OpExtension "SPV_EXT_physical_storage_buffer"
+OpMemoryModel PhysicalStorageBuffer64 GLSL450
+OpEntryPoint Fragment %main "main"
+OpExecutionMode %main OriginUpperLeft
+%uint = OpTypeInt 32 0
+%uint_1 = OpConstant %uint 1
+%ptr = OpTypePointer PhysicalStorageBuffer %uint
+%pptr_f = OpTypePointer Function %ptr
+%void = OpTypeVoid
+%voidfn = OpTypeFunction %void
+%main = OpFunction %void None %voidfn
+%entry = OpLabel
+%val1 = OpVariable %pptr_f Function
+%val2 = OpLoad %ptr %val1
+OpStore %val2 %uint_1 Aligned 0
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_2);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "Memory accesses Aligned operand value 0 is not a power of two"));
+}
+
+TEST_F(ValidateMemory, PSBStoreAlignedNonPoT) {
+  const std::string body = R"(
+OpCapability PhysicalStorageBufferAddresses
+OpCapability Shader
+OpExtension "SPV_EXT_physical_storage_buffer"
+OpMemoryModel PhysicalStorageBuffer64 GLSL450
+OpEntryPoint Fragment %main "main"
+OpExecutionMode %main OriginUpperLeft
+%uint = OpTypeInt 32 0
+%uint_1 = OpConstant %uint 1
+%ptr = OpTypePointer PhysicalStorageBuffer %uint
+%pptr_f = OpTypePointer Function %ptr
+%void = OpTypeVoid
+%voidfn = OpTypeFunction %void
+%main = OpFunction %void None %voidfn
+%entry = OpLabel
+%val1 = OpVariable %pptr_f Function
+%val2 = OpLoad %ptr %val1
+OpStore %val2 %uint_1 Aligned 3
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_2);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "Memory accesses Aligned operand value 3 is not a power of two."));
+}
+
 TEST_F(ValidateMemory, PSBCopyMemoryAlignedSuccess) {
   const std::string body = R"(
 OpCapability PhysicalStorageBufferAddresses
@@ -1826,7 +1921,6 @@ OpMemoryModel PhysicalStorageBuffer64 GLSL450
 OpEntryPoint Fragment %main "main"
 OpExecutionMode %main OriginUpperLeft
 OpDecorate %val1 AliasedPointer
-%int = OpTypeInt 32 0
 %uint64 = OpTypeInt 64 0
 %u64_1 = OpConstant %uint64 1
 %ptr = OpTypePointer PhysicalStorageBuffer %uint64
@@ -1838,14 +1932,43 @@ OpDecorate %val1 AliasedPointer
 %val1 = OpVariable %pptr_f Function
 %val2 = OpLoad %ptr %val1
 %val3 = OpLoad %ptr %val1
-OpCopyMemory %val2 %val3 Aligned 4
-OpCopyMemory %val3 %val2 Aligned 4 Aligned 4
+OpCopyMemory %val2 %val3 Aligned 8
+OpCopyMemory %val3 %val2 Aligned 8 Aligned 8
 OpReturn
 OpFunctionEnd
 )";
 
   CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_2);
   EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+}
+
+TEST_F(ValidateMemory, CopyMemoryAliasScopeINTELMaskSuccess) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability MemoryAccessAliasingINTEL
+OpExtension "SPV_INTEL_memory_access_aliasing"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %main "main"
+OpExecutionMode %main OriginUpperLeft
+%alias_domain = OpAliasDomainDeclINTEL
+%alias_scope = OpAliasScopeDeclINTEL %alias_domain
+%alias_list = OpAliasScopeListDeclINTEL %alias_scope
+%void = OpTypeVoid
+%uint = OpTypeInt 32 0
+%ptr_uint = OpTypePointer Function %uint
+%func_type = OpTypeFunction %void
+%main = OpFunction %void None %func_type
+%entry = OpLabel
+%var1 = OpVariable %ptr_uint Function
+%var2 = OpVariable %ptr_uint Function
+OpCopyMemory %var1 %var2 Aligned|AliasScopeINTELMask 4 %alias_list
+OpCopyMemory %var1 %var2 Aligned|NoAliasINTELMask 4 %alias_list
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str());
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions());
 }
 
 TEST_F(ValidateMemory, PSBCopyMemoryAlignedMissingTarget) {
@@ -1858,7 +1981,6 @@ OpMemoryModel PhysicalStorageBuffer64 GLSL450
 OpEntryPoint Fragment %main "main"
 OpExecutionMode %main OriginUpperLeft
 OpDecorate %val1 AliasedPointer
-%int = OpTypeInt 32 0
 %uint64 = OpTypeInt 64 0
 %u64_1 = OpConstant %uint64 1
 %ptr = OpTypePointer PhysicalStorageBuffer %uint64
@@ -1870,7 +1992,7 @@ OpDecorate %val1 AliasedPointer
 %val1 = OpVariable %pptr_f Function
 %val2 = OpLoad %ptr %val1
 %val3 = OpLoad %ptr %val1
-OpCopyMemory %val2 %val3 Volatile Aligned 4
+OpCopyMemory %val2 %val3 Volatile Aligned 8
 OpReturn
 OpFunctionEnd
 )";
@@ -1894,7 +2016,6 @@ OpMemoryModel PhysicalStorageBuffer64 GLSL450
 OpEntryPoint Fragment %main "main"
 OpExecutionMode %main OriginUpperLeft
 OpDecorate %val1 AliasedPointer
-%int = OpTypeInt 32 0
 %uint64 = OpTypeInt 64 0
 %u64_1 = OpConstant %uint64 1
 %ptr = OpTypePointer PhysicalStorageBuffer %uint64
@@ -1906,7 +2027,7 @@ OpDecorate %val1 AliasedPointer
 %val1 = OpVariable %pptr_f Function
 %val2 = OpLoad %ptr %val1
 %val3 = OpLoad %ptr %val1
-OpCopyMemory %val2 %val3 Aligned 4 Volatile
+OpCopyMemory %val2 %val3 Aligned 8 Volatile
 OpReturn
 OpFunctionEnd
 )";
@@ -1930,7 +2051,6 @@ OpMemoryModel PhysicalStorageBuffer64 GLSL450
 OpEntryPoint Fragment %main "main"
 OpExecutionMode %main OriginUpperLeft
 OpDecorate %val1 AliasedPointer
-%int = OpTypeInt 32 0
 %uint64 = OpTypeInt 64 0
 %u64_1 = OpConstant %uint64 1
 %ptr = OpTypePointer PhysicalStorageBuffer %uint64
@@ -1982,6 +2102,562 @@ OpFunctionEnd
   EXPECT_THAT(
       getDiagnosticString(),
       HasSubstr("PhysicalStorageBuffer must not be used with OpVariable"));
+}
+
+TEST_F(ValidateMemory, PSBStoreAlignedOneWithUvec4) {
+  const std::string body = R"(
+               OpCapability Shader
+               OpCapability PhysicalStorageBufferAddresses
+               OpMemoryModel PhysicalStorageBuffer64 GLSL450
+               OpEntryPoint GLCompute %main "main" %_
+               OpExecutionMode %main LocalSize 1 1 1
+               OpDecorate %SSBO Block
+               OpMemberDecorate %SSBO 0 Offset 0
+               OpDecorate %Ptr Block
+               OpMemberDecorate %Ptr 0 Offset 0
+               OpDecorate %_ Binding 0
+               OpDecorate %_ DescriptorSet 0
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+               OpTypeForwardPointer %_ptr_PhysicalStorageBuffer_Ptr PhysicalStorageBuffer
+       %SSBO = OpTypeStruct %_ptr_PhysicalStorageBuffer_Ptr
+       %uint = OpTypeInt 32 0
+     %v4uint = OpTypeVector %uint 4
+        %Ptr = OpTypeStruct %v4uint
+%_ptr_PhysicalStorageBuffer_Ptr = OpTypePointer PhysicalStorageBuffer %Ptr
+%_ptr_StorageBuffer_SSBO = OpTypePointer StorageBuffer %SSBO
+          %_ = OpVariable %_ptr_StorageBuffer_SSBO StorageBuffer
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_Ptr = OpTypePointer StorageBuffer %_ptr_PhysicalStorageBuffer_Ptr
+     %uint_0 = OpConstant %uint 0
+         %20 = OpConstantComposite %v4uint %uint_0 %uint_0 %uint_0 %uint_0
+%_ptr_PhysicalStorageBuffer_v4uint = OpTypePointer PhysicalStorageBuffer %v4uint
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+         %17 = OpAccessChain %_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_Ptr %_ %int_0
+         %18 = OpLoad %_ptr_PhysicalStorageBuffer_Ptr %17
+         %22 = OpAccessChain %_ptr_PhysicalStorageBuffer_v4uint %18 %int_0
+               OpStore %22 %20 Aligned 1
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_2);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-PhysicalStorageBuffer64-06314"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Memory accesses Aligned operand value 1 is too small, "
+                        "the largest scalar type is 4 bytes"));
+}
+
+TEST_F(ValidateMemory, PSBStoreAlignedOneWithUint32) {
+  const std::string body = R"(
+               OpCapability Shader
+               OpCapability PhysicalStorageBufferAddresses
+               OpMemoryModel PhysicalStorageBuffer64 GLSL450
+               OpEntryPoint GLCompute %main "main" %_
+               OpExecutionMode %main LocalSize 1 1 1
+               OpDecorate %SSBO Block
+               OpMemberDecorate %SSBO 0 Offset 0
+               OpDecorate %B Block
+               OpMemberDecorate %B 0 Offset 0
+               OpDecorate %_ Binding 0
+               OpDecorate %_ DescriptorSet 0
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+               OpTypeForwardPointer %_ptr_PhysicalStorageBuffer_B PhysicalStorageBuffer
+       %SSBO = OpTypeStruct %_ptr_PhysicalStorageBuffer_B
+       %uint = OpTypeInt 32 0
+          %B = OpTypeStruct %uint
+%_ptr_PhysicalStorageBuffer_B = OpTypePointer PhysicalStorageBuffer %B
+%_ptr_StorageBuffer_SSBO = OpTypePointer StorageBuffer %SSBO
+          %_ = OpVariable %_ptr_StorageBuffer_SSBO StorageBuffer
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_B = OpTypePointer StorageBuffer %_ptr_PhysicalStorageBuffer_B
+     %uint_0 = OpConstant %uint 0
+%_ptr_PhysicalStorageBuffer_uint = OpTypePointer PhysicalStorageBuffer %uint
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+         %16 = OpAccessChain %_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_B %_ %int_0
+         %17 = OpLoad %_ptr_PhysicalStorageBuffer_B %16
+         %20 = OpAccessChain %_ptr_PhysicalStorageBuffer_uint %17 %int_0
+               OpStore %20 %uint_0 Aligned 2
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_2);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-PhysicalStorageBuffer64-06314"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Memory accesses Aligned operand value 2 is too small, "
+                        "the largest scalar type is 4 bytes"));
+}
+
+// https://github.com/KhronosGroup/glslang/issues/4024
+TEST_F(ValidateMemory, PSBStoreAlignedPointerNot8) {
+  const std::string body = R"(
+               OpCapability Shader
+               OpCapability PhysicalStorageBufferAddresses
+               OpMemoryModel PhysicalStorageBuffer64 GLSL450
+               OpEntryPoint GLCompute %main "main" %_
+               OpExecutionMode %main LocalSize 1 1 1
+               OpDecorate %SSBO Block
+               OpMemberDecorate %SSBO 0 Offset 0
+               OpDecorate %B Block
+               OpMemberDecorate %B 0 Offset 0
+               OpDecorate %A Block
+               OpMemberDecorate %A 0 Offset 0
+               OpDecorate %_ Binding 0
+               OpDecorate %_ DescriptorSet 0
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+               OpTypeForwardPointer %_ptr_PhysicalStorageBuffer_B PhysicalStorageBuffer
+       %SSBO = OpTypeStruct %_ptr_PhysicalStorageBuffer_B
+               OpTypeForwardPointer %_ptr_PhysicalStorageBuffer_A PhysicalStorageBuffer
+          %B = OpTypeStruct %_ptr_PhysicalStorageBuffer_A
+       %uint = OpTypeInt 32 0
+          %A = OpTypeStruct %uint
+%_ptr_PhysicalStorageBuffer_A = OpTypePointer PhysicalStorageBuffer %A
+%_ptr_PhysicalStorageBuffer_B = OpTypePointer PhysicalStorageBuffer %B
+%_ptr_StorageBuffer_SSBO = OpTypePointer StorageBuffer %SSBO
+          %_ = OpVariable %_ptr_StorageBuffer_SSBO StorageBuffer
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_B = OpTypePointer StorageBuffer %_ptr_PhysicalStorageBuffer_B
+%_ptr_PhysicalStorageBuffer__ptr_PhysicalStorageBuffer_A = OpTypePointer PhysicalStorageBuffer %_ptr_PhysicalStorageBuffer_A
+     %uint_0 = OpConstant %uint 0
+%_ptr_PhysicalStorageBuffer_uint = OpTypePointer PhysicalStorageBuffer %uint
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+         %18 = OpAccessChain %_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_B %_ %int_0
+         %19 = OpLoad %_ptr_PhysicalStorageBuffer_B %18
+         %21 = OpAccessChain %_ptr_PhysicalStorageBuffer__ptr_PhysicalStorageBuffer_A %19 %int_0
+         %22 = OpLoad %_ptr_PhysicalStorageBuffer_A %21 Aligned 4
+         %25 = OpAccessChain %_ptr_PhysicalStorageBuffer_uint %22 %int_0
+               OpStore %25 %uint_0 Aligned 4
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_2);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-PhysicalStorageBuffer64-06314"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Memory accesses Aligned operand value 4 is too small, "
+                        "the largest scalar type is 8 bytes"));
+}
+
+// https://godbolt.org/z/sbGv6a7os
+TEST_F(ValidateMemory, PSBStoreAlignedStructCopyWithDeepDouble) {
+  const std::string body = R"(
+               OpCapability Shader
+               OpCapability Float64
+               OpCapability PhysicalStorageBufferAddresses
+               OpMemoryModel PhysicalStorageBuffer64 GLSL450
+               OpEntryPoint GLCompute %main "main" %_
+               OpExecutionMode %main LocalSize 1 1 1
+               OpDecorate %SSBO Block
+               OpMemberDecorate %SSBO 0 Offset 0
+               OpMemberDecorate %A 0 Offset 0
+               OpMemberDecorate %A 1 Offset 8
+               OpMemberDecorate %B 0 Offset 0
+               OpMemberDecorate %B 1 Offset 16
+               OpMemberDecorate %C 0 Offset 0
+               OpMemberDecorate %C 1 Offset 32
+               OpDecorate %Ptr Block
+               OpMemberDecorate %Ptr 0 Offset 0
+               OpDecorate %_ Binding 0
+               OpDecorate %_ DescriptorSet 0
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+               OpTypeForwardPointer %_ptr_PhysicalStorageBuffer_Ptr PhysicalStorageBuffer
+       %SSBO = OpTypeStruct %_ptr_PhysicalStorageBuffer_Ptr
+      %float = OpTypeFloat 32
+    %v3float = OpTypeVector %float 3
+       %uint = OpTypeInt 32 0
+     %double = OpTypeFloat 64
+          %A = OpTypeStruct %uint %double
+          %B = OpTypeStruct %v3float %A
+          %C = OpTypeStruct %B %uint
+        %Ptr = OpTypeStruct %C
+%_ptr_PhysicalStorageBuffer_Ptr = OpTypePointer PhysicalStorageBuffer %Ptr
+%_ptr_StorageBuffer_SSBO = OpTypePointer StorageBuffer %SSBO
+          %_ = OpVariable %_ptr_StorageBuffer_SSBO StorageBuffer
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_Ptr = OpTypePointer StorageBuffer %_ptr_PhysicalStorageBuffer_Ptr
+        %A_0 = OpTypeStruct %uint %double
+        %B_0 = OpTypeStruct %v3float %A_0
+        %C_0 = OpTypeStruct %B_0 %uint
+%_ptr_Function_C_0 = OpTypePointer Function %C_0
+%_ptr_PhysicalStorageBuffer_C = OpTypePointer PhysicalStorageBuffer %C
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+       %newC = OpVariable %_ptr_Function_C_0 Function
+         %22 = OpAccessChain %_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_Ptr %_ %int_0
+         %23 = OpLoad %_ptr_PhysicalStorageBuffer_Ptr %22
+         %29 = OpLoad %C_0 %newC
+         %31 = OpAccessChain %_ptr_PhysicalStorageBuffer_C %23 %int_0
+         %32 = OpCopyLogical %C %29
+               OpStore %31 %32 Aligned 4
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_2);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-PhysicalStorageBuffer64-06314"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Memory accesses Aligned operand value 4 is too small, "
+                        "the largest scalar type is 8 bytes"));
+}
+
+TEST_F(ValidateMemory, PSBStoreAlignedPtrAccessChain) {
+  const std::string body = R"(
+               OpCapability PhysicalStorageBufferAddresses
+               OpCapability Int64
+               OpCapability Shader
+               OpExtension "SPV_KHR_non_semantic_info"
+               OpExtension "SPV_KHR_physical_storage_buffer"
+          %2 = OpExtInstImport "NonSemantic.Shader.DebugInfo.100"
+               OpMemoryModel PhysicalStorageBuffer64 GLSL450
+               OpEntryPoint GLCompute %computeMain "main" %globalParams
+               OpExecutionMode %computeMain LocalSize 1 1 1
+               OpDecorate %_ptr_PhysicalStorageBuffer_ulong ArrayStride 8
+               OpDecorate %GlobalParams_std140 Block
+               OpMemberDecorate %GlobalParams_std140 0 Offset 0
+               OpDecorate %globalParams Binding 0
+               OpDecorate %globalParams DescriptorSet 0
+       %void = OpTypeVoid
+       %uint = OpTypeInt 32 0
+         %12 = OpTypeFunction %void
+      %ulong = OpTypeInt 64 0
+%_ptr_PhysicalStorageBuffer_ulong = OpTypePointer PhysicalStorageBuffer %ulong
+%GlobalParams_std140 = OpTypeStruct %_ptr_PhysicalStorageBuffer_ulong
+%_ptr_Uniform_GlobalParams_std140 = OpTypePointer Uniform %GlobalParams_std140
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_Uniform__ptr_PhysicalStorageBuffer_ulong = OpTypePointer Uniform %_ptr_PhysicalStorageBuffer_ulong
+    %ulong_1 = OpConstant %ulong 1
+%globalParams = OpVariable %_ptr_Uniform_GlobalParams_std140 Uniform
+%computeMain = OpFunction %void None %12
+         %13 = OpLabel
+         %36 = OpInBoundsAccessChain %_ptr_Uniform__ptr_PhysicalStorageBuffer_ulong %globalParams %int_0
+         %37 = OpLoad %_ptr_PhysicalStorageBuffer_ulong %36
+         %38 = OpPtrAccessChain %_ptr_PhysicalStorageBuffer_ulong %37 %int_0
+               OpStore %38 %ulong_1 Aligned 4
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_2);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-PhysicalStorageBuffer64-06314"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Memory accesses Aligned operand value 4 is too small, "
+                        "the largest scalar type is 8 bytes"));
+}
+
+TEST_F(ValidateMemory, PSBStoreAlignedUntypedStorageBuffer) {
+  const std::string body = R"(
+               OpCapability Shader
+               OpCapability UntypedPointersKHR
+               OpCapability PhysicalStorageBufferAddresses
+               OpExtension "SPV_KHR_untyped_pointers"
+               OpMemoryModel PhysicalStorageBuffer64 GLSL450
+               OpEntryPoint GLCompute %main "main" %_
+               OpExecutionMode %main LocalSize 1 1 1
+               OpDecorate %SSBO Block
+               OpMemberDecorate %SSBO 0 Offset 0
+               OpDecorate %B Block
+               OpMemberDecorate %B 0 Offset 0
+               OpDecorate %_ Binding 0
+               OpDecorate %_ DescriptorSet 0
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+               OpTypeForwardPointer %_ptr_PhysicalStorageBuffer_B PhysicalStorageBuffer
+       %SSBO = OpTypeStruct %_ptr_PhysicalStorageBuffer_B
+       %uint = OpTypeInt 32 0
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+     %uint_0 = OpConstant %uint 0
+          %B = OpTypeStruct %uint
+%_ptr_PhysicalStorageBuffer_B = OpTypePointer PhysicalStorageBuffer %B
+%_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_B = OpTypePointer StorageBuffer %_ptr_PhysicalStorageBuffer_B
+%untyped_ptr = OpTypeUntypedPointerKHR StorageBuffer
+          %_ = OpUntypedVariableKHR %untyped_ptr StorageBuffer %SSBO
+%_ptr_PhysicalStorageBuffer_uint = OpTypePointer PhysicalStorageBuffer %uint
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+         %16 = OpUntypedAccessChainKHR %untyped_ptr %SSBO %_ %int_0
+         %17 = OpLoad %_ptr_PhysicalStorageBuffer_B %16
+         %20 = OpAccessChain %_ptr_PhysicalStorageBuffer_uint %17 %int_0
+               OpStore %20 %uint_0 Aligned 2
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_2);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-PhysicalStorageBuffer64-06314"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Memory accesses Aligned operand value 2 is too small, "
+                        "the largest scalar type is 4 bytes"));
+}
+
+TEST_F(ValidateMemory, PSBStoreAlignedUntypedPhysicalStorageBuffer) {
+  const std::string body = R"(
+               OpCapability Shader
+               OpCapability UntypedPointersKHR
+               OpCapability PhysicalStorageBufferAddresses
+               OpExtension "SPV_KHR_untyped_pointers"
+               OpMemoryModel PhysicalStorageBuffer64 GLSL450
+               OpEntryPoint GLCompute %main "main" %_
+               OpExecutionMode %main LocalSize 1 1 1
+               OpDecorate %SSBO Block
+               OpMemberDecorate %SSBO 0 Offset 0
+               OpDecorate %B Block
+               OpMemberDecorate %B 0 Offset 0
+               OpDecorate %_ Binding 0
+               OpDecorate %_ DescriptorSet 0
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+               OpTypeForwardPointer %_ptr_PhysicalStorageBuffer_B PhysicalStorageBuffer
+       %SSBO = OpTypeStruct %_ptr_PhysicalStorageBuffer_B
+       %uint = OpTypeInt 32 0
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+     %uint_0 = OpConstant %uint 0
+          %B = OpTypeStruct %uint
+%_ptr_PhysicalStorageBuffer_B = OpTypePointer PhysicalStorageBuffer %B
+%_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_B = OpTypePointer StorageBuffer %_ptr_PhysicalStorageBuffer_B
+%untyped_ptr = OpTypeUntypedPointerKHR StorageBuffer
+          %_ = OpUntypedVariableKHR %untyped_ptr StorageBuffer %SSBO
+%_ptr_PhysicalStorageBuffer_uint = OpTypePointer PhysicalStorageBuffer %uint
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+         %16 = OpUntypedAccessChainKHR %untyped_ptr %SSBO %_ %int_0
+         %17 = OpLoad %_ptr_PhysicalStorageBuffer_B %16
+         %20 = OpAccessChain %_ptr_PhysicalStorageBuffer_uint %17 %int_0
+               OpStore %20 %uint_0 Aligned 2
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_2);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-PhysicalStorageBuffer64-06314"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Memory accesses Aligned operand value 2 is too small, "
+                        "the largest scalar type is 4 bytes"));
+}
+
+TEST_F(ValidateMemory, PSBStoreAlignedVariousTypeSuccess) {
+  const std::string body = R"(
+               OpCapability Shader
+               OpCapability Float64
+               OpCapability Int8
+               OpCapability StorageBuffer8BitAccess
+               OpCapability PhysicalStorageBufferAddresses
+          %2 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel PhysicalStorageBuffer64 GLSL450
+               OpEntryPoint GLCompute %main "main" %_
+               OpExecutionMode %main LocalSize 1 1 1
+               OpDecorate %SSBO Block
+               OpMemberDecorate %SSBO 0 Offset 0
+               OpDecorate %Ptr Block
+               OpMemberDecorate %Ptr 0 Offset 0
+               OpMemberDecorate %Ptr 1 Offset 4
+               OpMemberDecorate %Ptr 2 Offset 8
+               OpDecorate %_ Binding 0
+               OpDecorate %_ DescriptorSet 0
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+               OpTypeForwardPointer %_ptr_PhysicalStorageBuffer_Ptr PhysicalStorageBuffer
+       %SSBO = OpTypeStruct %_ptr_PhysicalStorageBuffer_Ptr
+      %uchar = OpTypeInt 8 0
+       %uint = OpTypeInt 32 0
+     %double = OpTypeFloat 64
+        %Ptr = OpTypeStruct %uchar %uint %double
+%_ptr_PhysicalStorageBuffer_Ptr = OpTypePointer PhysicalStorageBuffer %Ptr
+%_ptr_StorageBuffer_SSBO = OpTypePointer StorageBuffer %SSBO
+          %_ = OpVariable %_ptr_StorageBuffer_SSBO StorageBuffer
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_Ptr = OpTypePointer StorageBuffer %_ptr_PhysicalStorageBuffer_Ptr
+    %uchar_0 = OpConstant %uchar 0
+%_ptr_PhysicalStorageBuffer_uchar = OpTypePointer PhysicalStorageBuffer %uchar
+      %int_1 = OpConstant %int 1
+     %uint_0 = OpConstant %uint 0
+%_ptr_PhysicalStorageBuffer_uint = OpTypePointer PhysicalStorageBuffer %uint
+      %int_2 = OpConstant %int 2
+   %double_0 = OpConstant %double 0
+%_ptr_PhysicalStorageBuffer_double = OpTypePointer PhysicalStorageBuffer %double
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+         %18 = OpAccessChain %_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_Ptr %_ %int_0
+         %19 = OpLoad %_ptr_PhysicalStorageBuffer_Ptr %18
+         %22 = OpAccessChain %_ptr_PhysicalStorageBuffer_uchar %19 %int_0
+               OpStore %22 %uchar_0 Aligned 1
+         %23 = OpAccessChain %_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_Ptr %_ %int_0
+         %24 = OpLoad %_ptr_PhysicalStorageBuffer_Ptr %23
+         %28 = OpAccessChain %_ptr_PhysicalStorageBuffer_uint %24 %int_1
+               OpStore %28 %uint_0 Aligned 4
+         %29 = OpAccessChain %_ptr_StorageBuffer__ptr_PhysicalStorageBuffer_Ptr %_ %int_0
+         %30 = OpLoad %_ptr_PhysicalStorageBuffer_Ptr %29
+         %34 = OpAccessChain %_ptr_PhysicalStorageBuffer_double %30 %int_2
+               OpStore %34 %double_0 Aligned 8
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_2);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+}
+
+// https://github.com/KhronosGroup/SPIRV-Tools/issues/6322
+TEST_F(ValidateMemory, PSBStoreAlignedUntypedBitcaseSuccess) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability UntypedPointersKHR
+OpCapability VulkanMemoryModel
+OpCapability VulkanMemoryModelDeviceScopeKHR
+OpCapability Int8
+OpCapability PhysicalStorageBufferAddresses
+OpExtension "SPV_KHR_storage_buffer_storage_class"
+OpExtension "SPV_KHR_untyped_pointers"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_KHR_physical_storage_buffer"
+OpMemoryModel PhysicalStorageBuffer64 Vulkan
+OpEntryPoint GLCompute %main "main" %id
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %id BuiltIn GlobalInvocationId
+OpDecorate %untyped_phys_ptr ArrayStride 1
+OpDecorate %data_buffer Block
+OpMemberDecorate %data_buffer 0 Offset 0
+OpDecorate %phys_ptrs_struct Block
+OpMemberDecorate %phys_ptrs_struct 0 Offset 0
+OpMemberDecorate %phys_ptrs_struct 1 Offset 8
+OpDecorate %all_data_var DescriptorSet 0
+OpDecorate %all_data_var Binding 0
+
+%uint32 = OpTypeInt 32 0
+%void = OpTypeVoid
+%uint8 = OpTypeInt 8 0
+%vec3_uint32 = OpTypeVector %uint32 3
+%void_func = OpTypeFunction %void
+%c_uint32_0 = OpConstant %uint32 0
+%c_uint32_1 = OpConstant %uint32 1
+%c_uint32_32 = OpConstant %uint32 32
+
+%uint32_input_ptr = OpTypePointer Input %uint32
+%vec3_uint32_input_ptr = OpTypePointer Input %vec3_uint32
+%data_buffer = OpTypeStruct %uint8
+%untyped_phys_ptr = OpTypeUntypedPointerKHR PhysicalStorageBuffer
+%uint8_phys_ptr = OpTypePointer PhysicalStorageBuffer %uint8
+%data_buffer_phys_ptr = OpTypePointer PhysicalStorageBuffer %data_buffer
+%data_buffer_phys_ptr_ptr = OpTypePointer StorageBuffer %data_buffer_phys_ptr
+%phys_ptrs_struct = OpTypeStruct %data_buffer_phys_ptr %data_buffer_phys_ptr
+%phys_ptrs_struct_ptr = OpTypePointer StorageBuffer %phys_ptrs_struct
+%all_data_var = OpVariable %phys_ptrs_struct_ptr StorageBuffer
+%id = OpVariable %vec3_uint32_input_ptr Input
+%main = OpFunction %void None %void_func
+%label_main = OpLabel
+%input_ptr = OpAccessChain %data_buffer_phys_ptr_ptr %all_data_var %c_uint32_0
+%input = OpLoad %data_buffer_phys_ptr %input_ptr
+%input_loc = OpAccessChain %uint8_phys_ptr %input %c_uint32_0
+%output_ptr = OpAccessChain %data_buffer_phys_ptr_ptr %all_data_var %c_uint32_1
+%output = OpLoad %data_buffer_phys_ptr %output_ptr
+%output_loc = OpUntypedAccessChainKHR %untyped_phys_ptr %data_buffer %output %c_uint32_0
+%bitcasted = OpBitcast %untyped_phys_ptr %input_loc
+%bitcasted_val = OpLoad %uint8 %bitcasted Aligned 1
+OpStore %output_loc %bitcasted_val Aligned 1
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_1);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+}
+
+// https://github.com/KhronosGroup/SPIRV-Tools/issues/6322
+TEST_F(ValidateMemory, PSBStoreAlignedUntypedBitcase) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability UntypedPointersKHR
+OpCapability VulkanMemoryModel
+OpCapability VulkanMemoryModelDeviceScopeKHR
+OpCapability Int16
+OpCapability PhysicalStorageBufferAddresses
+OpExtension "SPV_KHR_storage_buffer_storage_class"
+OpExtension "SPV_KHR_untyped_pointers"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_KHR_physical_storage_buffer"
+OpMemoryModel PhysicalStorageBuffer64 Vulkan
+OpEntryPoint GLCompute %main "main" %id
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %id BuiltIn GlobalInvocationId
+OpDecorate %untyped_phys_ptr ArrayStride 1
+OpDecorate %data_buffer Block
+OpMemberDecorate %data_buffer 0 Offset 0
+OpDecorate %phys_ptrs_struct Block
+OpMemberDecorate %phys_ptrs_struct 0 Offset 0
+OpMemberDecorate %phys_ptrs_struct 1 Offset 8
+OpDecorate %all_data_var DescriptorSet 0
+OpDecorate %all_data_var Binding 0
+
+%uint32 = OpTypeInt 32 0
+%void = OpTypeVoid
+%uint16 = OpTypeInt 16 0
+%vec3_uint32 = OpTypeVector %uint32 3
+%void_func = OpTypeFunction %void
+%c_uint32_0 = OpConstant %uint32 0
+%c_uint32_1 = OpConstant %uint32 1
+%c_uint32_32 = OpConstant %uint32 32
+
+%uint32_input_ptr = OpTypePointer Input %uint32
+%vec3_uint32_input_ptr = OpTypePointer Input %vec3_uint32
+%data_buffer = OpTypeStruct %uint16
+%untyped_phys_ptr = OpTypeUntypedPointerKHR PhysicalStorageBuffer
+%uint16_phys_ptr = OpTypePointer PhysicalStorageBuffer %uint16
+%data_buffer_phys_ptr = OpTypePointer PhysicalStorageBuffer %data_buffer
+%data_buffer_phys_ptr_ptr = OpTypePointer StorageBuffer %data_buffer_phys_ptr
+%phys_ptrs_struct = OpTypeStruct %data_buffer_phys_ptr %data_buffer_phys_ptr
+%phys_ptrs_struct_ptr = OpTypePointer StorageBuffer %phys_ptrs_struct
+%all_data_var = OpVariable %phys_ptrs_struct_ptr StorageBuffer
+%id = OpVariable %vec3_uint32_input_ptr Input
+%main = OpFunction %void None %void_func
+%label_main = OpLabel
+%input_ptr = OpAccessChain %data_buffer_phys_ptr_ptr %all_data_var %c_uint32_0
+%input = OpLoad %data_buffer_phys_ptr %input_ptr
+%input_loc = OpAccessChain %uint16_phys_ptr %input %c_uint32_0
+%output_ptr = OpAccessChain %data_buffer_phys_ptr_ptr %all_data_var %c_uint32_1
+%output = OpLoad %data_buffer_phys_ptr %output_ptr
+%output_loc = OpUntypedAccessChainKHR %untyped_phys_ptr %data_buffer %output %c_uint32_0
+%bitcasted = OpBitcast %untyped_phys_ptr %input_loc
+%bitcasted_val = OpLoad %uint16 %bitcasted Aligned 1
+OpStore %output_loc %bitcasted_val Aligned 1
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_1);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-PhysicalStorageBuffer64-06314"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Memory accesses Aligned operand value 1 is too small, "
+                        "the largest scalar type is 2 bytes"));
 }
 
 std::string GenCoopMatLoadStoreShader(const std::string& storeMemoryAccess,
@@ -2168,7 +2844,8 @@ OpStore %111 %115
 %116 = OpLoad %71 %111
 %121 = OpLoad %6 %60
 %122 = OpAccessChain %82 %120 %79 %121
-OpCooperativeMatrixStoreNV %122 %116 %84 %86 )" + storeMemoryAccess + R"( %81
+OpCooperativeMatrixStoreNV %122 %116 %84 %86 )" +
+                  storeMemoryAccess + R"( %81
 OpReturn
 OpFunctionEnd
 )";
@@ -2350,19 +3027,21 @@ OpFunctionEnd)";
   EXPECT_EQ(SPV_SUCCESS, ValidateInstructions());
 }
 
-std::string GenCoopMatLoadStoreShaderKHR(const std::string& storeMemoryAccess,
-                                         const std::string& loadMemoryAccess,
-                                         unsigned layout = 0,
-                                         bool useSpecConstantLayout = false,
-                                         bool useStoreStride = true,
-                                         bool useLoadStride = true) {
+std::string GenCoopMatLoadStoreShaderKHR(
+    const std::string& storeMemoryAccess, const std::string& loadMemoryAccess,
+    unsigned layout = 0, bool useSpecConstantLayout = false,
+    bool useStoreStride = true, bool useLoadStride = true,
+    bool useConstantStride = true, unsigned stride = 4, unsigned rows = 16,
+    unsigned cols = 16) {
   std::string s = R"(
 OpCapability Shader
 OpCapability GroupNonUniform
 OpCapability VulkanMemoryModelKHR
 OpCapability CooperativeMatrixKHR
+OpCapability CooperativeMatrixLayoutsARM
 OpExtension "SPV_KHR_vulkan_memory_model"
 OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_ARM_cooperative_matrix_layouts"
 %1 = OpExtInstImport "GLSL.std.450"
 OpMemoryModel Logical VulkanKHR
 OpEntryPoint GLCompute %4 "main" %11 %21
@@ -2402,6 +3081,7 @@ OpDecorate %129 BuiltIn WorkgroupSize
 %7 = OpTypeVector %6 2
 %8 = OpTypePointer Function %7
 %10 = OpTypePointer Input %6
+%ptr_uint_Function = OpTypePointer Function %6
 %11 = OpVariable %10 Input
 %13 = OpConstant %6 2
 %19 = OpTypeVector %6 3
@@ -2411,7 +3091,8 @@ OpDecorate %129 BuiltIn WorkgroupSize
 %31 = OpTypePointer Function %6
 %33 = OpConstant %6 1024
 %34 = OpConstant %6 1
-%38 = OpConstant %6 8
+%cols = OpConstant %6 )" +
+                  std::to_string(cols) + R"(
 %uint_0 = OpConstant %6 0
 )";
   if (useSpecConstantLayout) {
@@ -2421,9 +3102,10 @@ OpDecorate %129 BuiltIn WorkgroupSize
   }
   s += R"(
 %68 = OpTypeFloat 32
-%69 = OpConstant %6 16
-%70 = OpConstant %6 3
-%71 = OpTypeCooperativeMatrixKHR %68 %70 %69 %38 %uint_0
+%rows = OpConstant %6 )" +
+       std::to_string(rows) + R"(
+%scope = OpConstant %6 3
+%71 = OpTypeCooperativeMatrixKHR %68 %scope %rows %cols %uint_0
 %72 = OpTypePointer Function %71
 %74 = OpTypeRuntimeArray %68
 %75 = OpTypeStruct %74
@@ -2433,7 +3115,11 @@ OpDecorate %129 BuiltIn WorkgroupSize
 %79 = OpConstant %78 0
 %81 = OpConstant %6 5
 %82 = OpTypePointer StorageBuffer %68
-%stride = OpConstant %6 64
+)";
+  if (useConstantStride) {
+    s += "%stride = OpConstant %6 " + std::to_string(stride);
+  }
+  s += R"(
 %88 = OpTypePointer Private %71
 %89 = OpVariable %88 Private
 %92 = OpTypeRuntimeArray %68
@@ -2464,6 +3150,7 @@ OpDecorate %129 BuiltIn WorkgroupSize
 %5 = OpLabel
 %9 = OpVariable %8 Function
 %18 = OpVariable %8 Function
+%stride_var = OpVariable %ptr_uint_Function Function
 %32 = OpVariable %31 Function
 %44 = OpVariable %31 Function
 %52 = OpVariable %31 Function
@@ -2471,6 +3158,11 @@ OpDecorate %129 BuiltIn WorkgroupSize
 %73 = OpVariable %72 Function
 %91 = OpVariable %72 Function
 %101 = OpVariable %72 Function
+)";
+  if (!useConstantStride) {
+    s += "%stride = OpLoad %6 %stride_var";
+  }
+  s += R"(
 %12 = OpLoad %6 %11
 %14 = OpUMod %6 %12 %13
 %15 = OpLoad %6 %11
@@ -2491,7 +3183,7 @@ OpStore %18 %30
 %37 = OpIMul %6 %33 %36
 %40 = OpAccessChain %31 %18 %uint_0
 %41 = OpLoad %6 %40
-%42 = OpIMul %6 %38 %41
+%42 = OpIMul %6 %cols %41
 %43 = OpIAdd %6 %37 %42
 OpStore %32 %43
 %45 = OpAccessChain %31 %18 %34
@@ -2499,7 +3191,7 @@ OpStore %32 %43
 %47 = OpIMul %6 %33 %46
 %48 = OpAccessChain %31 %18 %uint_0
 %49 = OpLoad %6 %48
-%50 = OpIMul %6 %38 %49
+%50 = OpIMul %6 %cols %49
 %51 = OpIAdd %6 %47 %50
 OpStore %44 %51
 %53 = OpAccessChain %31 %18 %34
@@ -2507,7 +3199,7 @@ OpStore %44 %51
 %55 = OpIMul %6 %33 %54
 %56 = OpAccessChain %31 %18 %uint_0
 %57 = OpLoad %6 %56
-%58 = OpIMul %6 %38 %57
+%58 = OpIMul %6 %cols %57
 %59 = OpIAdd %6 %55 %58
 OpStore %52 %59
 %61 = OpAccessChain %31 %18 %34
@@ -2515,7 +3207,7 @@ OpStore %52 %59
 %63 = OpIMul %6 %33 %62
 %64 = OpAccessChain %31 %18 %uint_0
 %65 = OpLoad %6 %64
-%66 = OpIMul %6 %38 %65
+%66 = OpIMul %6 %cols %65
 %67 = OpIAdd %6 %63 %66
 OpStore %60 %67
 %80 = OpLoad %6 %32
@@ -2594,7 +3286,19 @@ INSTANTIATE_TEST_SUITE_P(
             true},
         StrideMissingCase{
             (unsigned)spv::CooperativeMatrixLayout::ColumnMajorKHR, true,
-            false}));
+            false},
+        StrideMissingCase{
+            (unsigned)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM,
+            false, true},
+        StrideMissingCase{
+            (unsigned)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM,
+            true, false},
+        StrideMissingCase{
+            (unsigned)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM,
+            false, true},
+        StrideMissingCase{
+            (unsigned)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM,
+            true, false}));
 
 TEST_P(ValidateCoopMatrixStrideMissing, CoopMatKHRLoadStrideMissingFail) {
   const StrideMissingCase& param = GetParam();
@@ -2643,14 +3347,198 @@ TEST_F(ValidateMemory, CoopMatKHRLoadMemoryAccessFail) {
               HasSubstr("MakePointerAvailableKHR cannot be used with OpLoad"));
 }
 
+TEST_F(ValidateMemory,
+       CoopMatLoadArmRowBlockedInterleavedLayoutNonConstantStrideFail) {
+  std::string spirv = GenCoopMatLoadStoreShaderKHR(
+      "MakePointerAvailableKHR|NonPrivatePointerKHR",
+      "MakePointerAvailableKHR|NonPrivatePointerKHR",
+      (unsigned)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM,
+      false, /* useSpecConstantLayout */
+      true,  /* useStoreStride */
+      true,  /* useLoadStride */
+      false /* useConstantStride */);
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("MemoryLayout 4202 requires Stride come from a "
+                        "constant instruction"));
+}
+
+TEST_F(ValidateMemory,
+       CoopMatLoadArmColumnBlockedInterleavedLayoutNonConstantStrideFail) {
+  std::string spirv = GenCoopMatLoadStoreShaderKHR(
+      "MakePointerAvailableKHR|NonPrivatePointerKHR",
+      "MakePointerAvailableKHR|NonPrivatePointerKHR",
+      (unsigned)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM,
+      false, /* useSpecConstantLayout */
+      true,  /* useStoreStride */
+      true,  /* useLoadStride */
+      false /* useConstantStride */);
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("MemoryLayout 4203 requires Stride come from a "
+                        "constant instruction"));
+}
+
+struct StrideValueCase {
+  unsigned layout;
+  unsigned stride;
+  bool valid;
+};
+
+using ValidateCoopMatrixStrideValue = spvtest::ValidateBase<StrideValueCase>;
+
+INSTANTIATE_TEST_SUITE_P(
+    CoopMatrixStrideValue, ValidateCoopMatrixStrideValue,
+    Values(
+        StrideValueCase{
+            (unsigned)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM, 1,
+            true},
+        StrideValueCase{
+            (unsigned)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM, 2,
+            true},
+        StrideValueCase{
+            (unsigned)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM, 4,
+            true},
+        StrideValueCase{
+            (unsigned)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM, 8,
+            false},
+        StrideValueCase{
+            (unsigned)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM,
+            1, true},
+        StrideValueCase{
+            (unsigned)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM,
+            2, true},
+        StrideValueCase{
+            (unsigned)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM,
+            4, true},
+        StrideValueCase{
+            (unsigned)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM,
+            8, false}));
+
+TEST_P(ValidateCoopMatrixStrideValue, CoopMatLoadStoreStrideValue) {
+  const StrideValueCase& param = GetParam();
+  std::string spirv = GenCoopMatLoadStoreShaderKHR(
+      "MakePointerAvailableKHR|NonPrivatePointerKHR",
+      "MakePointerVisibleKHR|NonPrivatePointerKHR", param.layout,
+      false /*useSpecConstantLayout*/, true /*useStoreStride*/,
+      true /*useLoadStride*/, true /*useConstantStride*/, param.stride);
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_1);
+  if (param.valid) {
+    EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  } else {
+    EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+    EXPECT_THAT(getDiagnosticString(),
+                HasSubstr("MemoryLayout " + std::to_string(param.layout) +
+                          " requires Stride be 1, 2, or 4"));
+  }
+}
+
+struct MatrixSizeCase {
+  unsigned layout;
+  unsigned rows;
+  unsigned cols;
+  unsigned stride;
+  bool valid_rows;
+  bool valid_cols;
+};
+
+using ValidateCoopMatrixSize = spvtest::ValidateBase<MatrixSizeCase>;
+
+INSTANTIATE_TEST_SUITE_P(
+    CoopMatrixMatrixSize, ValidateCoopMatrixSize,
+    Values(
+        MatrixSizeCase{
+            (unsigned)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM, 4,
+            4, 1, true, true},
+        MatrixSizeCase{
+            (unsigned)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM, 4,
+            8, 2, true, true},
+        MatrixSizeCase{
+            (unsigned)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM, 2,
+            4, 1, false, true},
+        MatrixSizeCase{
+            (unsigned)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM, 2,
+            4, 2, false, false},
+        MatrixSizeCase{
+            (unsigned)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM, 4,
+            2, 1, true, false},
+        MatrixSizeCase{
+            (unsigned)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM, 4,
+            4, 2, true, false},
+        MatrixSizeCase{
+            (unsigned)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM,
+            4, 4, 1, true, true},
+        MatrixSizeCase{
+            (unsigned)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM,
+            8, 4, 2, true, true},
+        MatrixSizeCase{
+            (unsigned)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM,
+            4, 2, 1, true, false},
+        MatrixSizeCase{
+            (unsigned)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM,
+            4, 2, 2, false, false},
+        MatrixSizeCase{
+            (unsigned)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM,
+            2, 4, 1, false, true},
+        MatrixSizeCase{
+            (unsigned)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM,
+            4, 4, 2, false, true}));
+
+TEST_P(ValidateCoopMatrixSize, CoopMatLoadStoreMatrixSize) {
+  const MatrixSizeCase& param = GetParam();
+  std::string spirv = GenCoopMatLoadStoreShaderKHR(
+      "MakePointerAvailableKHR|NonPrivatePointerKHR",
+      "MakePointerVisibleKHR|NonPrivatePointerKHR", param.layout,
+      false /*useSpecConstantLayout*/, true /*useStoreStride*/,
+      true /*useLoadStride*/, true /*useConstantStride*/, param.stride,
+      param.rows, param.cols);
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_1);
+
+  uint32_t rows_required_multiple = 4;
+  uint32_t cols_required_multiple =
+      16 / 4;  // The shader always uses FP32 matrix components
+
+  if (param.layout ==
+      (uint64_t)spv::CooperativeMatrixLayout::RowBlockedInterleavedARM) {
+    cols_required_multiple *= param.stride;
+  }
+  if (param.layout ==
+      (uint64_t)spv::CooperativeMatrixLayout::ColumnBlockedInterleavedARM) {
+    rows_required_multiple *= param.stride;
+  }
+
+  if (param.valid_rows && param.valid_cols) {
+    EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  } else if (param.valid_rows) {
+    EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+    EXPECT_THAT(
+        getDiagnosticString(),
+        HasSubstr("MemoryLayout " + std::to_string(param.layout) +
+                  " with a Stride of " + std::to_string(param.stride) +
+                  " requires that the number of columns be a multiple of " +
+                  std::to_string(cols_required_multiple)));
+  } else {
+    EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+    EXPECT_THAT(
+        getDiagnosticString(),
+        HasSubstr("MemoryLayout " + std::to_string(param.layout) +
+                  " with a Stride of " + std::to_string(param.stride) +
+                  " requires that the number of rows be a multiple of " +
+                  std::to_string(rows_required_multiple)));
+  }
+}
+
 TEST_F(ValidateMemory, CoopMatKHRInvalidStorageClassFail) {
   const std::string body = R"(
 OpCapability Shader
 OpCapability Float16
 OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
 OpExtension "SPV_KHR_cooperative_matrix"
 OpExtension "SPV_KHR_vulkan_memory_model"
-OpMemoryModel Logical GLSL450
+OpMemoryModel Logical VulkanKHR
 OpEntryPoint GLCompute %main "main"
 %void = OpTypeVoid
 %func = OpTypeFunction %void
@@ -2673,8 +3561,8 @@ OpEntryPoint GLCompute %main "main"
 OpReturn
 OpFunctionEnd)";
 
-  CompileSuccessfully(body.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(
       getDiagnosticString(),
       HasSubstr(
@@ -2688,9 +3576,10 @@ TEST_F(ValidateMemory, CoopMatMatrixKHRLengthResultTypeBad) {
 OpCapability Shader
 OpCapability Float16
 OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
 OpExtension "SPV_KHR_cooperative_matrix"
 OpExtension "SPV_KHR_vulkan_memory_model"
-OpMemoryModel Logical GLSL450
+OpMemoryModel Logical VulkanKHR
 OpEntryPoint GLCompute %main "main"
 %void = OpTypeVoid
 %func = OpTypeFunction %void
@@ -2712,8 +3601,8 @@ OpEntryPoint GLCompute %main "main"
 OpReturn
 OpFunctionEnd)";
 
-  CompileSuccessfully(body.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(
       getDiagnosticString(),
       HasSubstr("The Result Type of OpCooperativeMatrixLengthKHR <id> "
@@ -2726,9 +3615,10 @@ TEST_F(ValidateMemory, CoopMatMatrixKHRLengthOperandTypeBad) {
 OpCapability Shader
 OpCapability Float16
 OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
 OpExtension "SPV_KHR_cooperative_matrix"
 OpExtension "SPV_KHR_vulkan_memory_model"
-OpMemoryModel Logical GLSL450
+OpMemoryModel Logical VulkanKHR
 OpEntryPoint GLCompute %main "main"
 %void = OpTypeVoid
 %func = OpTypeFunction %void
@@ -2750,8 +3640,8 @@ OpEntryPoint GLCompute %main "main"
 OpReturn
 OpFunctionEnd)";
 
-  CompileSuccessfully(body.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(
       getDiagnosticString(),
       HasSubstr("The type in OpCooperativeMatrixLengthKHR <id> '5[%uint]' "
@@ -2764,9 +3654,10 @@ TEST_F(ValidateMemory, CoopMatMatrixKHRLengthGood) {
 OpCapability Shader
 OpCapability Float16
 OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
 OpExtension "SPV_KHR_cooperative_matrix"
 OpExtension "SPV_KHR_vulkan_memory_model"
-OpMemoryModel Logical GLSL450
+OpMemoryModel Logical VulkanKHR
 OpEntryPoint GLCompute %main "main"
 %void = OpTypeVoid
 %func = OpTypeFunction %void
@@ -2788,8 +3679,8 @@ OpEntryPoint GLCompute %main "main"
 OpReturn
 OpFunctionEnd)";
 
-  CompileSuccessfully(body.c_str());
-  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions());
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
 }
 
 TEST_F(ValidateMemory, VulkanRTAOutsideOfStructBad) {
@@ -2820,7 +3711,8 @@ OpFunctionEnd
           "OpVariable, <id> '5[%5]', is attempting to create memory for an "
           "illegal type, OpTypeRuntimeArray.\nFor Vulkan OpTypeRuntimeArray "
           "can only appear as the final member of an OpTypeStruct, thus cannot "
-          "be instantiated via OpVariable\n  %5 = OpVariable "
+          "be instantiated via OpVariable, unless the RuntimeDescriptorArray "
+          "Capability is declared\n  %5 = OpVariable "
           "%_ptr_UniformConstant__runtimearr_2 UniformConstant\n"));
 }
 
@@ -2834,6 +3726,10 @@ OpEntryPoint Fragment %func "func"
 OpExecutionMode %func OriginUpperLeft
 OpDecorate %struct Block
 OpMemberDecorate %struct 0 Offset 0
+OpDecorate %2 DescriptorSet 0
+OpDecorate %2 Binding 0
+OpDecorate %3 DescriptorSet 0
+OpDecorate %3 Binding 1
 %sampler_t = OpTypeSampler
 %uint = OpTypeInt 32 0
 %array_t = OpTypeRuntimeArray %sampler_t
@@ -2883,7 +3779,7 @@ OpFunctionEnd
               AnyVUID("VUID-StandaloneSpirv-OpTypeRuntimeArray-04680"));
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr("For Vulkan with RuntimeDescriptorArrayEXT, a variable "
+      HasSubstr("For Vulkan with RuntimeDescriptorArray, a variable "
                 "containing OpTypeRuntimeArray must have storage class of "
                 "StorageBuffer, Uniform, or UniformConstant.\n  %5 = "
                 "OpVariable %_ptr_Workgroup__runtimearr_uint Workgroup\n"));
@@ -2898,6 +3794,8 @@ OpExecutionMode %func OriginUpperLeft
 OpDecorate %array_t ArrayStride 4
 OpMemberDecorate %struct_t 0 Offset 0
 OpDecorate %struct_t Block
+OpDecorate %2 DescriptorSet 0
+OpDecorate %2 Binding 0
 %uint_t = OpTypeInt 32 0
 %array_t = OpTypeRuntimeArray %uint_t
 %struct_t = OpTypeStruct %array_t
@@ -2989,6 +3887,8 @@ OpExecutionMode %func OriginUpperLeft
 OpDecorate %array_t ArrayStride 4
 OpMemberDecorate %struct_t 0 Offset 0
 OpDecorate %struct_t BufferBlock
+OpDecorate %2 DescriptorSet 0
+OpDecorate %2 Binding 0
 %uint_t = OpTypeInt 32 0
 %array_t = OpTypeRuntimeArray %uint_t
 %struct_t = OpTypeStruct %array_t
@@ -3006,13 +3906,17 @@ OpFunctionEnd
   EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
 }
 
-TEST_F(ValidateMemory, VulkanRTAInsideUniformStructWithoutBufferBlockBad) {
+TEST_F(ValidateMemory, VulkanRTAInsideUniformStructWithoutBufferBlock) {
   std::string spirv = R"(
 OpCapability Shader
 OpMemoryModel Logical GLSL450
 OpEntryPoint Fragment %func "func"
 OpExecutionMode %func OriginUpperLeft
+OpDecorate %array_t ArrayStride 16
 OpDecorate %struct_t Block
+OpMemberDecorate %struct_t 0 Offset 0
+OpDecorate %2 Binding 0
+OpDecorate %2 DescriptorSet 0
 %uint_t = OpTypeInt 32 0
 %array_t = OpTypeRuntimeArray %uint_t
 %struct_t = OpTypeStruct %array_t
@@ -3027,14 +3931,41 @@ OpFunctionEnd
 )";
 
   CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+}
+
+TEST_F(ValidateMemory, VulkanArrayLengthUniformRuntimeArray) {
+  std::string spirv = R"(
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
+OpDecorate %array_t ArrayStride 16
+OpDecorate %struct_t Block
+OpMemberDecorate %struct_t 0 Offset 0
+OpDecorate %2 Binding 0
+OpDecorate %2 DescriptorSet 0
+%uint_t = OpTypeInt 32 0
+%array_t = OpTypeRuntimeArray %uint_t
+%struct_t = OpTypeStruct %array_t
+%struct_ptr = OpTypePointer Uniform %struct_t
+%2 = OpVariable %struct_ptr Uniform
+%void = OpTypeVoid
+%func_t = OpTypeFunction %void
+%func = OpFunction %void None %func_t
+%1 = OpLabel
+%length = OpArrayLength %uint_t %2 0
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
   EXPECT_THAT(getDiagnosticString(),
-              AnyVUID("VUID-StandaloneSpirv-OpTypeRuntimeArray-04680"));
+              AnyVUID("VUID-StandaloneSpirv-OpArrayLength-11805"));
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("For Vulkan, an OpTypeStruct variable containing an "
-                        "OpTypeRuntimeArray must be decorated with BufferBlock "
-                        "if it has storage class Uniform.\n  %6 = OpVariable "
-                        "%_ptr_Uniform__struct_2 Uniform\n"));
+              HasSubstr("OpArrayLength must not be used on the "
+                        "OpTypeRuntimeArray inside a Uniform block"));
 }
 
 TEST_F(ValidateMemory, VulkanRTAInsideRTABad) {
@@ -3112,9 +4043,10 @@ OpExtension "SPV_EXT_descriptor_indexing"
 OpMemoryModel Logical GLSL450
 OpEntryPoint Fragment %func "func"
 OpExecutionMode %func OriginUpperLeft
-OpDecorate %array_t ArrayStride 4
 OpMemberDecorate %struct_t 0 Offset 0
 OpDecorate %struct_t Block
+OpDecorate %2 DescriptorSet 0
+OpDecorate %2 Binding 0
 %uint_t = OpTypeInt 32 0
 %struct_t = OpTypeStruct %uint_t
 %array_t = OpTypeRuntimeArray %struct_t
@@ -3358,9 +4290,10 @@ OpMemoryModel Logical GLSL450
 OpEntryPoint Fragment %func "func"
 OpExecutionMode %func OriginUpperLeft
 OpDecorate %inner_array_t ArrayStride 4
-OpDecorate %array_t ArrayStride 4
 OpMemberDecorate %struct_t 0 Offset 0
 OpDecorate %struct_t Block
+OpDecorate %2 DescriptorSet 0
+OpDecorate %2 Binding 0
 %uint_t = OpTypeInt 32 0
 %inner_array_t = OpTypeRuntimeArray %uint_t
 %struct_t = OpTypeStruct %inner_array_t
@@ -3388,9 +4321,10 @@ OpMemoryModel Logical GLSL450
 OpEntryPoint Fragment %func "func"
 OpExecutionMode %func OriginUpperLeft
 OpDecorate %inner_array_t ArrayStride 4
-OpDecorate %array_t ArrayStride 4
 OpMemberDecorate %struct_t 0 Offset 0
 OpDecorate %struct_t Block
+OpDecorate %2 DescriptorSet 0
+OpDecorate %2 Binding 0
 %uint_t = OpTypeInt 32 0
 %inner_array_t = OpTypeRuntimeArray %uint_t
 %struct_t = OpTypeStruct %inner_array_t
@@ -3761,7 +4695,7 @@ OpFunctionEnd
     EXPECT_EQ(SPV_ERROR_INVALID_ID,
               ValidateInstructions(SPV_ENV_UNIVERSAL_1_4));
     EXPECT_THAT(getDiagnosticString(),
-                HasSubstr("Instruction cannot for logical addressing model be "
+                HasSubstr("Instruction on logical pointers cannot be "
                           "used without a variable pointers capability"));
   }
 }
@@ -3884,8 +4818,11 @@ OpMemoryModel Logical GLSL450
 %void = OpTypeVoid
 %bool = OpTypeBool
 %int = OpTypeInt 32 0
+%float = OpTypeFloat 32
 %ptr_int = OpTypePointer Private %int
 %var = OpVariable %ptr_int Private
+%ptr_float = OpTypePointer Private %float
+%var2 = OpVariable %ptr_float Private
 %func_ty = OpTypeFunction %void
 %func = OpFunction %void None %func_ty
 %1 = OpLabel
@@ -3898,7 +4835,7 @@ OpMemoryModel Logical GLSL450
     spirv += " %bool ";
   }
 
-  spirv += R"(%var %ld
+  spirv += R"(%var %var2
 OpReturn
 OpFunctionEnd
 )";
@@ -3907,6 +4844,223 @@ OpFunctionEnd
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_4));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("The types of Operand 1 and Operand 2 must match"));
+}
+
+TEST_P(ValidatePointerComparisons, GoodUntypedPointerSameType) {
+  const std::string operation = GetParam();
+
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability Linkage
+OpCapability VariablePointersStorageBuffer
+OpCapability UntypedPointersKHR
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+%void = OpTypeVoid
+%bool = OpTypeBool
+%int = OpTypeInt 32 0
+%ptr = OpTypeUntypedPointerKHR StorageBuffer
+%var = OpUntypedVariableKHR %ptr StorageBuffer
+%func_ty = OpTypeFunction %void
+%func = OpFunction %void None %func_ty
+%1 = OpLabel
+%equal = )" + operation;
+
+  if (operation == "OpPtrDiff") {
+    spirv += " %int ";
+  } else {
+    spirv += " %bool ";
+  }
+
+  spirv += R"(%var %var
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_4);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_4));
+}
+
+TEST_P(ValidatePointerComparisons, GoodUntypedPointerSameStorageClass) {
+  const std::string operation = GetParam();
+
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability Linkage
+OpCapability VariablePointersStorageBuffer
+OpCapability UntypedPointersKHR
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+%void = OpTypeVoid
+%bool = OpTypeBool
+%int = OpTypeInt 32 0
+%ptr1 = OpTypeUntypedPointerKHR StorageBuffer
+%var = OpUntypedVariableKHR %ptr1 StorageBuffer
+%ptr2 = OpTypeUntypedPointerKHR StorageBuffer
+%var2 = OpUntypedVariableKHR %ptr2 StorageBuffer
+%func_ty = OpTypeFunction %void
+%func = OpFunction %void None %func_ty
+%1 = OpLabel
+%equal = )" + operation;
+
+  if (operation == "OpPtrDiff") {
+    spirv += " %int ";
+  } else {
+    spirv += " %bool ";
+  }
+
+  spirv += R"(%var %var2
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_4);
+  if (operation == "OpPtrDiff") {
+    EXPECT_EQ(SPV_ERROR_INVALID_ID,
+              ValidateInstructions(SPV_ENV_UNIVERSAL_1_4));
+    EXPECT_THAT(getDiagnosticString(),
+                HasSubstr("The types of Operand 1 and Operand 2 must match"));
+  } else {
+    EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_4));
+  }
+}
+
+TEST_P(ValidatePointerComparisons, BadUntypedPointerDiffStorageClass) {
+  const std::string operation = GetParam();
+
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability Linkage
+OpCapability VariablePointers
+OpCapability UntypedPointersKHR
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+%void = OpTypeVoid
+%bool = OpTypeBool
+%int = OpTypeInt 32 0
+%ptr1 = OpTypeUntypedPointerKHR StorageBuffer
+%var1 = OpUntypedVariableKHR %ptr1 StorageBuffer
+%ptr2 = OpTypeUntypedPointerKHR Workgroup
+%var2 = OpUntypedVariableKHR %ptr2 Workgroup %int
+%func_ty = OpTypeFunction %void
+%func = OpFunction %void None %func_ty
+%1 = OpLabel
+%equal = )" + operation;
+
+  if (operation == "OpPtrDiff") {
+    spirv += " %int ";
+  } else {
+    spirv += " %bool ";
+  }
+
+  spirv += R"(%var1 %var2
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_4);
+  if (operation == "OpPtrDiff") {
+    EXPECT_EQ(SPV_ERROR_INVALID_ID,
+              ValidateInstructions(SPV_ENV_UNIVERSAL_1_4));
+    EXPECT_THAT(getDiagnosticString(),
+                HasSubstr("The types of Operand 1 and Operand 2 must match"));
+  } else {
+    EXPECT_EQ(SPV_ERROR_INVALID_ID,
+              ValidateInstructions(SPV_ENV_UNIVERSAL_1_4));
+    EXPECT_THAT(getDiagnosticString(),
+                HasSubstr("Pointer storage classes must match"));
+  }
+}
+
+TEST_P(ValidatePointerComparisons, GoodMixedPointerSameStorageClass) {
+  const std::string operation = GetParam();
+
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability Linkage
+OpCapability VariablePointersStorageBuffer
+OpCapability UntypedPointersKHR
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+%void = OpTypeVoid
+%bool = OpTypeBool
+%int = OpTypeInt 32 0
+%ptr1 = OpTypeUntypedPointerKHR StorageBuffer
+%var = OpUntypedVariableKHR %ptr1 StorageBuffer
+%ptr2 = OpTypePointer StorageBuffer %int
+%var2 = OpVariable %ptr2 StorageBuffer
+%func_ty = OpTypeFunction %void
+%func = OpFunction %void None %func_ty
+%1 = OpLabel
+%equal = )" + operation;
+
+  if (operation == "OpPtrDiff") {
+    spirv += " %int ";
+  } else {
+    spirv += " %bool ";
+  }
+
+  spirv += R"(%var %var2
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_4);
+  if (operation == "OpPtrDiff") {
+    EXPECT_EQ(SPV_ERROR_INVALID_ID,
+              ValidateInstructions(SPV_ENV_UNIVERSAL_1_4));
+    EXPECT_THAT(getDiagnosticString(),
+                HasSubstr("The types of Operand 1 and Operand 2 must match"));
+  } else {
+    EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_4));
+  }
+}
+
+TEST_P(ValidatePointerComparisons, BadMixedPointerDiffStorageClass) {
+  const std::string operation = GetParam();
+
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability Linkage
+OpCapability VariablePointers
+OpCapability UntypedPointersKHR
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+%void = OpTypeVoid
+%bool = OpTypeBool
+%int = OpTypeInt 32 0
+%ptr1 = OpTypeUntypedPointerKHR StorageBuffer
+%var1 = OpUntypedVariableKHR %ptr1 StorageBuffer
+%ptr2 = OpTypePointer Workgroup %int
+%var2 = OpVariable %ptr2 Workgroup
+%func_ty = OpTypeFunction %void
+%func = OpFunction %void None %func_ty
+%1 = OpLabel
+%equal = )" + operation;
+
+  if (operation == "OpPtrDiff") {
+    spirv += " %int ";
+  } else {
+    spirv += " %bool ";
+  }
+
+  spirv += R"(%var1 %var2
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_4);
+  if (operation == "OpPtrDiff") {
+    EXPECT_EQ(SPV_ERROR_INVALID_ID,
+              ValidateInstructions(SPV_ENV_UNIVERSAL_1_4));
+    EXPECT_THAT(getDiagnosticString(),
+                HasSubstr("The types of Operand 1 and Operand 2 must match"));
+  } else {
+    EXPECT_EQ(SPV_ERROR_INVALID_ID,
+              ValidateInstructions(SPV_ENV_UNIVERSAL_1_4));
+    EXPECT_THAT(getDiagnosticString(),
+                HasSubstr("Pointer storage classes must match"));
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(PointerComparisons, ValidatePointerComparisons,
@@ -5169,8 +6323,8 @@ OpExecutionMode %func OriginUpperLeft
 OpReturn
 OpFunctionEnd
 )";
-  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_0);
-  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_3));
   EXPECT_THAT(getDiagnosticString(),
               AnyVUID(" VUID-StandaloneSpirv-OpVariable-04734"));
   EXPECT_THAT(getDiagnosticString(),
@@ -5197,8 +6351,8 @@ OpExecutionMode %func OriginUpperLeft
 OpReturn
 OpFunctionEnd
 )";
-  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_0);
-  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
 }
 
 TEST_F(ValidateMemory, LoadRuntimeArray) {
@@ -5431,7 +6585,45 @@ OpFunctionEnd
   CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_1);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("Vulkan requires that data type be specified"));
+              AnyVUID("VUID-StandaloneSpirv-OpUntypedVariableKHR-11167"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "Storage class is StorageBuffer, but Vulkan requires that Data Type "
+          "be specified when not using UniformConstant storage class"));
+}
+
+TEST_F(ValidateMemory, UntypedVariableNoDataTypeNonHeapVulkan) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability DescriptorHeapEXT
+OpCapability UntypedPointersKHR
+OpExtension "SPV_EXT_descriptor_heap"
+OpExtension "SPV_KHR_untyped_pointers"
+OpExtension "SPV_KHR_storage_buffer_storage_class"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%int = OpTypeInt 32 0
+%int_0 = OpConstant %int 0
+%ptr = OpTypeUntypedPointerKHR UniformConstant
+%var = OpUntypedVariableKHR %ptr UniformConstant
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-OpUntypedVariableKHR-11347"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Storage class is UniformConstant, but Vulkan requires "
+                        "that Data Type be specified if the variable is not "
+                        "decorated with SamplerHeapEXT or ResourceHeapEXT"));
 }
 
 TEST_F(ValidateMemory, PtrAccessChainArrayStrideBad) {
@@ -5674,8 +6866,8 @@ OpFunctionEnd
 
   CompileSuccessfully(spirv);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
-  EXPECT_THAT(getDiagnosticString(), HasSubstr("Index is out of bounds"));
-  EXPECT_THAT(getDiagnosticString(), HasSubstr("cannot find index -224"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Index at word 4 may not have a negative value"));
 }
 
 TEST_F(ValidateMemory, AccessChainNegativeStructIndex64) {
@@ -5702,8 +6894,8 @@ OpFunctionEnd
 
   CompileSuccessfully(spirv);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
-  EXPECT_THAT(getDiagnosticString(), HasSubstr("Index is out of bounds"));
-  EXPECT_THAT(getDiagnosticString(), HasSubstr("cannot find index -224"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Index at word 4 may not have a negative value"));
 }
 
 TEST_F(ValidateMemory, UntypedVariableFunctionOutsideFunction) {
@@ -5863,6 +7055,7 @@ TEST_P(ValidateMemoryUntypedAccessChain, GoodTypedPointerBase) {
   const bool ptr = opcode == "OpUntypedPtrAccessChainKHR" ||
                    opcode == "OpUntypedInBoundsPtrAccessChainKHR";
   const std::string extra_param = ptr ? "%int_0" : "";
+  const std::string deco = ptr ? "OpDecorate %ptr_ssbo ArrayStride 4" : "";
 
   const std::string spirv = R"(
 OpCapability Shader
@@ -5873,6 +7066,7 @@ OpExtension "SPV_KHR_storage_buffer_storage_class"
 OpExtension "SPV_KHR_untyped_pointers"
 OpMemoryModel Logical GLSL450
 OpEntryPoint GLCompute %main "main"
+)" + deco + R"(
 %void = OpTypeVoid
 %int = OpTypeInt 32 0
 %int_0 = OpConstant %int 0
@@ -5889,6 +7083,8 @@ OpReturn
 OpFunctionEnd
 )";
 
+  getValidatorOptions()->relax_logical_pointer =
+      opcode == "OpUntypedInBoundsPtrAccessChainKHR";
   CompileSuccessfully(spirv);
   EXPECT_EQ(SPV_SUCCESS, ValidateInstructions());
 }
@@ -5898,6 +7094,7 @@ TEST_P(ValidateMemoryUntypedAccessChain, GoodUntypedPointerBase) {
   const bool ptr = opcode == "OpUntypedPtrAccessChainKHR" ||
                    opcode == "OpUntypedInBoundsPtrAccessChainKHR";
   const std::string extra_param = ptr ? "%int_0" : "";
+  const std::string deco = ptr ? "OpDecorate %ptr ArrayStride 4" : "";
 
   const std::string spirv = R"(
 OpCapability Shader
@@ -5908,6 +7105,7 @@ OpExtension "SPV_KHR_storage_buffer_storage_class"
 OpExtension "SPV_KHR_untyped_pointers"
 OpMemoryModel Logical GLSL450
 OpEntryPoint GLCompute %main "main"
+)" + deco + R"(
 %void = OpTypeVoid
 %int = OpTypeInt 32 0
 %int_0 = OpConstant %int 0
@@ -5924,6 +7122,8 @@ OpReturn
 OpFunctionEnd
 )";
 
+  getValidatorOptions()->relax_logical_pointer =
+      opcode == "OpUntypedInBoundsPtrAccessChainKHR";
   CompileSuccessfully(spirv);
   EXPECT_EQ(SPV_SUCCESS, ValidateInstructions());
 }
@@ -5961,6 +7161,8 @@ OpReturn
 OpFunctionEnd
 )";
 
+  getValidatorOptions()->relax_logical_pointer =
+      opcode == "OpUntypedInBoundsPtrAccessChainKHR";
   CompileSuccessfully(spirv);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
@@ -6000,6 +7202,8 @@ OpReturn
 OpFunctionEnd
 )";
 
+  getValidatorOptions()->relax_logical_pointer =
+      opcode == "OpUntypedInBoundsPtrAccessChainKHR";
   CompileSuccessfully(spirv);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
@@ -6038,6 +7242,8 @@ OpReturn
 OpFunctionEnd
 )";
 
+  getValidatorOptions()->relax_logical_pointer =
+      opcode == "OpUntypedInBoundsPtrAccessChainKHR";
   CompileSuccessfully(spirv);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
@@ -6076,6 +7282,8 @@ OpReturn
 OpFunctionEnd
 )";
 
+  getValidatorOptions()->relax_logical_pointer =
+      opcode == "OpUntypedInBoundsPtrAccessChainKHR";
   CompileSuccessfully(spirv);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
@@ -6114,6 +7322,8 @@ OpReturn
 OpFunctionEnd
 )";
 
+  getValidatorOptions()->relax_logical_pointer =
+      opcode == "OpUntypedInBoundsPtrAccessChainKHR";
   CompileSuccessfully(spirv);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
@@ -6153,6 +7363,8 @@ OpReturn
 OpFunctionEnd
 )";
 
+  getValidatorOptions()->relax_logical_pointer =
+      opcode == "OpUntypedInBoundsPtrAccessChainKHR";
   CompileSuccessfully(spirv);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(
@@ -6194,6 +7406,8 @@ OpReturn
 OpFunctionEnd
 )";
 
+  getValidatorOptions()->relax_logical_pointer =
+      opcode == "OpUntypedInBoundsPtrAccessChainKHR";
   CompileSuccessfully(spirv);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
@@ -6233,6 +7447,8 @@ OpReturn
 OpFunctionEnd
 )";
 
+  getValidatorOptions()->relax_logical_pointer =
+      opcode == "OpUntypedInBoundsPtrAccessChainKHR";
   CompileSuccessfully(spirv);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
@@ -6568,6 +7784,41 @@ OpFunctionEnd
   EXPECT_THAT(getDiagnosticString(), HasSubstr("Size must be a multiple of 2"));
 }
 
+TEST_F(ValidateMemory, CopyMemorySizedVulkanConstant) {
+  const std::string spirv = R"(
+        OpCapability Shader
+        OpCapability UntypedPointersKHR
+        OpExtension "SPV_KHR_untyped_pointers"
+        OpMemoryModel Logical GLSL450
+        OpEntryPoint GLCompute %main "main" %v1 %v2
+        OpExecutionMode %main LocalSize 1 1 1
+        OpDecorate %struct Block
+        OpDecorate %v1 DescriptorSet 0
+        OpDecorate %v1 Binding 0
+        OpDecorate %v2 DescriptorSet 0
+        OpDecorate %v2 Binding 0
+        OpMemberDecorate %struct 0 Offset 0
+        %void = OpTypeVoid
+        %int = OpTypeInt 32 0
+        %int_2 = OpConstant %int 2
+        %struct = OpTypeStruct %int
+        %ptr = OpTypeUntypedPointerKHR StorageBuffer
+        %v1 = OpUntypedVariableKHR %ptr StorageBuffer %struct
+        %v2 = OpUntypedVariableKHR %ptr StorageBuffer %struct
+        %void_fn = OpTypeFunction %void
+        %main = OpFunction %void None %void_fn
+        %entry = OpLabel
+        OpCopyMemorySized %v2 %v1 %int_2
+        OpReturn
+        OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(), HasSubstr("Size must be a multiple of 4"));
+  EXPECT_THAT(getDiagnosticString(), AnyVUID("VUID-RuntimeSpirv-Size-11165"));
+}
+
 TEST_F(ValidateMemory, PtrEqualUntypedPointersGood) {
   const std::string spirv = R"(
 OpCapability Shader
@@ -6851,8 +8102,9 @@ OpFunctionEnd
 
   CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
-  EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("must be OpTypeInt with width 32 and signedness 0"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("must be OpTypeInt with width 32 or 64 and signedness 0"));
 }
 
 TEST_F(ValidateMemory, UntypedArrayLengthBadPointer) {
@@ -6886,7 +8138,46 @@ OpFunctionEnd
   CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
   EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("Pointer must be an untyped pointer"));
+              HasSubstr("Pointer must be an untyped pointer object"));
+}
+
+TEST_F(ValidateMemory, UntypedArrayLengthBadPointer2) {
+  const std::string spirv = R"(
+               OpCapability Shader
+               OpCapability UntypedPointersKHR
+               OpCapability Int64
+               OpExtension "SPV_KHR_untyped_pointers"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %b
+               OpExecutionMode %main LocalSize 1 1 1
+               OpDecorate %_runtimearr_float ArrayStride 4
+               OpDecorate %B Block
+               OpMemberDecorate %B 0 NonWritable
+               OpMemberDecorate %B 0 Offset 0
+               OpDecorate %b NonWritable
+               OpDecorate %b Binding 0
+               OpDecorate %b DescriptorSet 0
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+%_runtimearr_float = OpTypeRuntimeArray %float
+          %B = OpTypeStruct %_runtimearr_float
+        %ptr = OpTypeUntypedPointerKHR StorageBuffer
+          %b = OpUntypedVariableKHR %ptr StorageBuffer %B
+      %ulong = OpTypeInt 64 0
+       %long = OpTypeInt 64 1
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+         %13 = OpUntypedArrayLengthKHR %ulong %b %ptr 0
+         %15 = OpBitcast %long %13
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Pointer must be an untyped pointer object"));
 }
 
 TEST_F(ValidateMemory, UntypedArrayLengtBadStruct) {
@@ -7171,6 +8462,639 @@ OpFunctionEnd
   EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
 }
 
+TEST_F(ValidateMemory, PtrAccessChainElementNotInteger) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability VariablePointers
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %ptr_int ArrayStride 4
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_4 = OpConstant %int 4
+%int_0 = OpConstant %int 0
+%float = OpTypeFloat 32
+%float_0 = OpConstant %float 0
+%array = OpTypeArray %int %int_4
+%ptr_array = OpTypePointer Workgroup %array
+%ptr_int = OpTypePointer Workgroup %int
+%var = OpVariable %ptr_array Workgroup
+%void_fn = OpTypeFunction %void
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%gep = OpAccessChain %ptr_int %var %int_0
+%ptr_gep = OpPtrAccessChain %ptr_int %gep %float_0
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(), HasSubstr("Element must be an integer"));
+}
+
+TEST_F(ValidateMemory, PtrAccessChainElementNotIntegerUntyped) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability VariablePointers
+OpCapability UntypedPointersKHR
+OpCapability WorkgroupMemoryExplicitLayoutKHR
+OpExtension "SPV_KHR_untyped_pointers"
+OpExtension "SPV_KHR_workgroup_memory_explicit_layout"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main" %var
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %ptr_int ArrayStride 4
+OpDecorate %array ArrayStride 4
+OpDecorate %block Block
+OpMemberDecorate %block 0 Offset 0
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_4 = OpConstant %int 4
+%int_0 = OpConstant %int 0
+%float = OpTypeFloat 32
+%float_0 = OpConstant %float 0
+%array = OpTypeArray %int %int_4
+%block = OpTypeStruct %array
+%ptr_block = OpTypeUntypedPointerKHR Workgroup
+%ptr_int = OpTypeUntypedPointerKHR Workgroup
+%var = OpUntypedVariableKHR %ptr_block Workgroup %block
+%void_fn = OpTypeFunction %void
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%gep = OpUntypedAccessChainKHR %ptr_int %block %var %int_0 %int_0
+%ptr_gep = OpUntypedPtrAccessChainKHR %ptr_int %int %gep %float_0
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_2);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(getDiagnosticString(), HasSubstr("Element must be an integer"));
+}
+
+TEST_F(ValidateMemory, PtrAccessChainElementBlockArrayNonZeroConstant) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability VariablePointers
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %var DescriptorSet 0
+OpDecorate %var Binding 0
+OpDecorate %block Block
+OpMemberDecorate %block 0 Offset 0
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_4 = OpConstant %int 4
+%int_1 = OpConstant %int 1
+%int_0 = OpConstant %int 0
+%block = OpTypeStruct %int
+%array = OpTypeArray %block %int_4
+%ptr_array = OpTypePointer StorageBuffer %array
+%ptr_block = OpTypePointer StorageBuffer %block
+%var = OpVariable %ptr_array StorageBuffer
+%void_fn = OpTypeFunction %void
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%gep = OpAccessChain %ptr_block %var %int_0
+%ptr_gep = OpPtrAccessChain %ptr_block %gep %int_1
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Element must be 0 if the interpretation type is a "
+                        "Block- or BufferBlock-decorated structure"));
+}
+
+TEST_F(ValidateMemory, PtrAccessChainElementBlockArrayNonZeroConstantUntyped) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability VariablePointers
+OpCapability UntypedPointersKHR
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %var DescriptorSet 0
+OpDecorate %var Binding 0
+OpDecorate %block Block
+OpMemberDecorate %block 0 Offset 0
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_4 = OpConstant %int 4
+%int_1 = OpConstant %int 1
+%int_0 = OpConstant %int 0
+%block = OpTypeStruct %int
+%array = OpTypeArray %block %int_4
+%ptr_array = OpTypeUntypedPointerKHR StorageBuffer
+%ptr_block = OpTypeUntypedPointerKHR StorageBuffer
+%var = OpUntypedVariableKHR %ptr_array StorageBuffer %array
+%void_fn = OpTypeFunction %void
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%gep = OpUntypedAccessChainKHR %ptr_block %array %var %int_0
+%ptr_gep = OpUntypedPtrAccessChainKHR %ptr_block %block %gep %int_1
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Element must be 0 if the interpretation type is a "
+                        "Block- or BufferBlock-decorated structure"));
+}
+
+TEST_F(ValidateMemory, UntypedAccessChainBlockArrayMismatch1) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability UntypedPointersKHR
+OpCapability VariablePointers
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %var DescriptorSet 0
+OpDecorate %var Binding 0
+OpDecorate %block Block
+OpMemberDecorate %block 0 Offset 0
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_1 = OpConstant %int 1
+%int_4 = OpConstant %int 4
+%int_0 = OpConstant %int 0
+%block = OpTypeStruct %int
+%array1 = OpTypeArray %block %int_4
+%array2 = OpTypeArray %block %int_4
+%ptr = OpTypeUntypedPointerKHR StorageBuffer
+%var = OpUntypedVariableKHR %ptr StorageBuffer %array1
+%void_fn = OpTypeFunction %void
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%gep = OpUntypedAccessChainKHR %ptr %array2 %var
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("If Base or Base Type is a Block or BufferBlock array, "
+                        "the other must also be the same array"));
+}
+
+TEST_F(ValidateMemory, UntypedAccessChainBlockArrayMismatch2) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability UntypedPointersKHR
+OpCapability VariablePointers
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %var DescriptorSet 0
+OpDecorate %var Binding 0
+OpDecorate %block Block
+OpMemberDecorate %block 0 Offset 0
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_1 = OpConstant %int 1
+%int_4 = OpConstant %int 4
+%int_0 = OpConstant %int 0
+%block = OpTypeStruct %int
+%array1 = OpTypeArray %block %int_4
+%ptr = OpTypeUntypedPointerKHR StorageBuffer
+%var = OpUntypedVariableKHR %ptr StorageBuffer %array1
+%void_fn = OpTypeFunction %void
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%gep = OpUntypedAccessChainKHR %ptr %block %var
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Both Base Type and Base must be Block or BufferBlock "
+                        "arrays or neither can be"));
+}
+
+TEST_F(ValidateMemory, UntypedAccessChainBlockArrayMismatch3) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability UntypedPointersKHR
+OpCapability VariablePointers
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %var DescriptorSet 0
+OpDecorate %var Binding 0
+OpDecorate %block Block
+OpMemberDecorate %block 0 Offset 0
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_1 = OpConstant %int 1
+%int_4 = OpConstant %int 4
+%int_0 = OpConstant %int 0
+%block = OpTypeStruct %int
+%array1 = OpTypeArray %block %int_4
+%array2 = OpTypeArray %block %int_4
+%ptr = OpTypeUntypedPointerKHR StorageBuffer
+%ptr_block_array = OpTypePointer StorageBuffer %array1
+%var = OpVariable %ptr_block_array StorageBuffer
+%void_fn = OpTypeFunction %void
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%copy1 = OpCopyObject %ptr_block_array %var
+%copy2 = OpCopyObject %ptr_block_array %copy1
+%gep = OpUntypedAccessChainKHR %ptr %array2 %copy2
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("If Base or Base Type is a Block or BufferBlock array, "
+                        "the other must also be the same array"));
+}
+
+TEST_F(ValidateMemory, UntypedAccessChainBlockArrayMismatch4) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability UntypedPointersKHR
+OpCapability VariablePointers
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %var DescriptorSet 0
+OpDecorate %var Binding 0
+OpDecorate %block Block
+OpMemberDecorate %block 0 Offset 0
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_1 = OpConstant %int 1
+%int_4 = OpConstant %int 4
+%int_0 = OpConstant %int 0
+%block = OpTypeStruct %int
+%array1 = OpTypeArray %block %int_4
+%ptr = OpTypeUntypedPointerKHR StorageBuffer
+%ptr_block_array = OpTypePointer StorageBuffer %array1
+%var = OpVariable %ptr_block_array StorageBuffer
+%void_fn = OpTypeFunction %void
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%copy = OpCopyObject %ptr_block_array %var
+%gep = OpUntypedAccessChainKHR %ptr %block %copy
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Both Base Type and Base must be Block or BufferBlock "
+                        "arrays or neither can be"));
+}
+
+TEST_F(ValidateMemory, VariableFunctionPointer) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%int = OpTypeInt 32 0
+%ptr = OpTypePointer Function %int
+%ptr_ptr = OpTypePointer Function %ptr
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%var = OpVariable %ptr_ptr Function
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("In Logical addressing, variables can only allocate a pointer "
+                "to the StorageBuffer or Workgroup storage classes"));
+}
+
+TEST_F(ValidateMemory, VariableFunctionPointerUntyped) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability UntypedPointersKHR
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%int = OpTypeInt 32 0
+%ptr = OpTypeUntypedPointerKHR Function
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%var = OpUntypedVariableKHR %ptr Function %ptr
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("In Logical addressing, variables can only allocate a pointer "
+                "to the StorageBuffer or Workgroup storage classes"));
+}
+
+TEST_F(ValidateMemory, VariableStorageBufferPointer) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%int = OpTypeInt 32 0
+%ptr = OpTypePointer StorageBuffer %int
+%ptr_ptr = OpTypePointer Function %ptr
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%var = OpVariable %ptr_ptr Function
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "In Logical addressing, variables can only allocate a storage "
+          "buffer pointer if the VariablePointersStorageBuffer capability "
+          "is declared"));
+}
+
+TEST_F(ValidateMemory, VariableStorageBufferPointerUntyped) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability UntypedPointersKHR
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%int = OpTypeInt 32 0
+%ptr_s = OpTypeUntypedPointerKHR StorageBuffer
+%ptr_f = OpTypeUntypedPointerKHR Function
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%var = OpUntypedVariableKHR %ptr_f Function %ptr_s
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "In Logical addressing, variables can only allocate a storage "
+          "buffer pointer if the VariablePointersStorageBuffer capability "
+          "is declared"));
+}
+
+TEST_F(ValidateMemory, VariableWorkgroupPointer) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%int = OpTypeInt 32 0
+%ptr = OpTypePointer Workgroup %int
+%ptr_ptr = OpTypePointer Function %ptr
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%var = OpVariable %ptr_ptr Function
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "In Logical addressing, variables can only allocate a workgroup "
+          "pointer if the VariablePointers capability is declared"));
+}
+
+TEST_F(ValidateMemory, VariableWorkgroupPointerUntyped) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability UntypedPointersKHR
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%int = OpTypeInt 32 0
+%ptr_w = OpTypeUntypedPointerKHR Workgroup
+%ptr_f = OpTypeUntypedPointerKHR Function
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%var = OpUntypedVariableKHR %ptr_f Function %ptr_w
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "In Logical addressing, variables can only allocate a workgroup "
+          "pointer if the VariablePointers capability is declared"));
+}
+
+TEST_F(ValidateMemory, VariablePointerBadStorageClass) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability VariablePointers
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%int = OpTypeInt 32 0
+%ptr = OpTypePointer Workgroup %int
+%ptr_ptr = OpTypePointer Workgroup %ptr
+%var = OpVariable %ptr_ptr Workgroup
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "In Logical addressing with variable pointers, variables that "
+          "allocate pointers must be in Function or Private storage classes"));
+}
+
+TEST_F(ValidateMemory, VariablePointerInStruct) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability VariablePointers
+OpExtension "SPV_KHR_variable_pointers"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%int = OpTypeInt 32 0
+%ptr_s = OpTypePointer Workgroup %int
+%struct_t = OpTypeStruct %ptr_s
+%ptr_struct = OpTypePointer Function %struct_t
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%var = OpVariable %ptr_struct Function
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+TEST_F(ValidateMemory, VariablePointerInArray) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability VariablePointers
+OpExtension "SPV_KHR_variable_pointers"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%int = OpTypeInt 32 0
+%int_4 = OpConstant %int 4
+%ptr_s = OpTypePointer Workgroup %int
+%array_t = OpTypeArray %ptr_s %int_4
+%ptr_array = OpTypePointer Function %array_t
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%var = OpVariable %ptr_array Function
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+TEST_F(ValidateMemory, NoVariablePointerInStruct) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%int = OpTypeInt 32 0
+%ptr_f = OpTypePointer Function %int
+%struct_t = OpTypeStruct %ptr_f
+%ptr_struct = OpTypePointer Function %struct_t
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%var = OpVariable %ptr_struct Function
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("In Logical addressing, variables can only allocate a pointer "
+                "to the StorageBuffer or Workgroup storage classes"));
+}
+
+TEST_F(ValidateMemory, VariablePointerBadStorageClassUntyped) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability UntypedPointersKHR
+OpCapability VariablePointers
+OpExtension "SPV_KHR_untyped_pointers"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%int = OpTypeInt 32 0
+%ptr_w = OpTypeUntypedPointerKHR Workgroup
+%var = OpUntypedVariableKHR %ptr_w Workgroup %ptr_w
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "In Logical addressing with variable pointers, variables that "
+          "allocate pointers must be in Function or Private storage classes"));
+}
+
+TEST_F(ValidateMemory, AccessChainNegativeSignedIndex) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%int = OpTypeInt 32 1
+%int_n1 = OpConstant %int -1
+%int_4 = OpConstant %int 4
+%array = OpTypeArray %int %int_4
+%ptr_array = OpTypePointer Workgroup %array
+%ptr_int = OpTypePointer Workgroup %int
+%var = OpVariable %ptr_array Workgroup
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%gep = OpAccessChain %ptr_int %var %int_n1
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Index at word 4 may not have a negative value"));
+}
+
 std::string GenCoopMat2Shader(const std::string& extra_types,
                               const std::string& main_body,
                               const std::string& after_main = "",
@@ -7273,8 +9197,8 @@ TEST_F(ValidateMemory, CoopMat2TensorLayoutAndViewSuccess) {
       R"(
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
 }
 
 TEST_F(ValidateMemory, CoopMat2TensorLayoutInvalidDimFail) {
@@ -7287,8 +9211,8 @@ TEST_F(ValidateMemory, CoopMat2TensorLayoutInvalidDimFail) {
       R"(
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(), HasSubstr("must be between 1 and 5"));
 }
 
@@ -7302,8 +9226,8 @@ TEST_F(ValidateMemory, CoopMat2TensorLayoutInvalidClampFail) {
       R"(
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("must be a valid TensorClampMode"));
 }
@@ -7320,8 +9244,8 @@ TEST_F(ValidateMemory, CoopMat2TensorViewInvalidDimFail) {
       R"(
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(), HasSubstr("must be between 1 and 5"));
 }
 
@@ -7337,8 +9261,8 @@ TEST_F(ValidateMemory, CoopMat2TensorViewInvalidPermutationFail) {
       R"(
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("Permutation values don't form a valid permutation"));
 }
@@ -7355,8 +9279,8 @@ TEST_F(ValidateMemory, CoopMat2TensorViewInvalidPermutation2Fail) {
       R"(
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("Incorrect number of permutation values."));
 }
@@ -7374,8 +9298,8 @@ TEST_F(ValidateMemory, CoopMat2TensorLayoutBlockSizePass) {
       %tl2 = OpTensorLayoutSetBlockSizeNV %layout %tl %b %b %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
 }
 
 TEST_F(ValidateMemory, CoopMat2TensorLayoutBlockSizeFail) {
@@ -7391,8 +9315,8 @@ TEST_F(ValidateMemory, CoopMat2TensorLayoutBlockSizeFail) {
       %tl2 = OpTensorLayoutSetBlockSizeNV %layout %tl %b %b %b %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("unexpected number of operands"));
 }
@@ -7410,8 +9334,8 @@ TEST_F(ValidateMemory, CoopMat2TensorLayoutDimensionPass) {
       %tl2 = OpTensorLayoutSetDimensionNV %layout %tl %b %b %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
 }
 
 TEST_F(ValidateMemory, CoopMat2TensorLayoutDimensionFail) {
@@ -7427,8 +9351,8 @@ TEST_F(ValidateMemory, CoopMat2TensorLayoutDimensionFail) {
       %tl2 = OpTensorLayoutSetDimensionNV %layout %tl %b %b %b %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("unexpected number of operands"));
 }
@@ -7446,8 +9370,8 @@ TEST_F(ValidateMemory, CoopMat2TensorLayoutStridePass) {
       %tl2 = OpTensorLayoutSetStrideNV %layout %tl %b %b %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
 }
 
 TEST_F(ValidateMemory, CoopMat2TensorLayoutStrideFail) {
@@ -7463,8 +9387,8 @@ TEST_F(ValidateMemory, CoopMat2TensorLayoutStrideFail) {
       %tl2 = OpTensorLayoutSetStrideNV %layout %tl %b %b %b %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("unexpected number of operands"));
 }
@@ -7482,8 +9406,8 @@ TEST_F(ValidateMemory, CoopMat2TensorLayoutSlicePass) {
       %tl2 = OpTensorLayoutSliceNV %layout %tl %b %b %b %b %b %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
 }
 
 TEST_F(ValidateMemory, CoopMat2TensorLayoutSliceFail) {
@@ -7499,8 +9423,8 @@ TEST_F(ValidateMemory, CoopMat2TensorLayoutSliceFail) {
       %tl2 = OpTensorLayoutSliceNV %layout %tl %b %b %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("unexpected number of operands"));
 }
@@ -7518,8 +9442,8 @@ TEST_F(ValidateMemory, CoopMat2TensorLayoutSetClampValuePass) {
       %tl2 = OpTensorLayoutSetClampValueNV %layout %tl %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
 }
 
 TEST_F(ValidateMemory, CoopMat2TensorViewDimensionPass) {
@@ -7538,8 +9462,8 @@ TEST_F(ValidateMemory, CoopMat2TensorViewDimensionPass) {
       %tv2 = OpTensorViewSetDimensionNV %view %tv %b %b %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
 }
 
 TEST_F(ValidateMemory, CoopMat2TensorViewDimensionFail) {
@@ -7558,8 +9482,8 @@ TEST_F(ValidateMemory, CoopMat2TensorViewDimensionFail) {
       %tv2 = OpTensorViewSetDimensionNV %view %tv %b %b %b %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("unexpected number of operands"));
 }
@@ -7580,8 +9504,8 @@ TEST_F(ValidateMemory, CoopMat2TensorViewStridePass) {
       %tv2 = OpTensorViewSetStrideNV %view %tv %b %b %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
 }
 
 TEST_F(ValidateMemory, CoopMat2TensorViewStrideFail) {
@@ -7600,8 +9524,8 @@ TEST_F(ValidateMemory, CoopMat2TensorViewStrideFail) {
       %tv2 = OpTensorViewSetStrideNV %view %tv %b %b %b %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("unexpected number of operands"));
 }
@@ -7622,8 +9546,8 @@ TEST_F(ValidateMemory, CoopMat2TensorViewClipPass) {
       %tv2 = OpTensorViewSetClipNV %view %tv %b %b %b %b
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
 }
 
 TEST_F(ValidateMemory, CoopMat2LoadStoreTensorPass) {
@@ -7653,8 +9577,8 @@ TEST_F(ValidateMemory, CoopMat2LoadStoreTensorPass) {
       OpCooperativeMatrixStoreTensorNV %array_ptr %mat %tl Aligned 4 TensorView %tv
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
 }
 
 TEST_F(ValidateMemory, CoopMat2LoadTensorWrongLayoutTypeFail) {
@@ -7675,8 +9599,8 @@ TEST_F(ValidateMemory, CoopMat2LoadTensorWrongLayoutTypeFail) {
       %mat2 = OpCooperativeMatrixLoadTensorNV %f16mat %array_ptr %mat %tv None None
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("does not have a tensor layout type"));
 }
@@ -7699,8 +9623,8 @@ TEST_F(ValidateMemory, CoopMat2LoadTensorWrongObjectTypeFail) {
       %mat2 = OpCooperativeMatrixLoadTensorNV %f16mat %array_ptr %mat %tl None None
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("type does not match Result Type"));
 }
@@ -7723,8 +9647,8 @@ TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeFuncTypeFail) {
       %mat2 = OpCooperativeMatrixLoadTensorNV %f32mat %array_ptr %mat %tl None DecodeFunc %decodefunc
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("return type must match matrix component type"));
 }
@@ -7762,8 +9686,8 @@ TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeFuncArrayTypeFail) {
       OpDecorate %psb2 Restrict
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("dimension equal to the tensor dimension"));
 }
@@ -7797,11 +9721,1719 @@ TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeFuncPointerTypeFail) {
       OpFunctionEnd
       )");
 
-  CompileSuccessfully(spirv.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(
       getDiagnosticString(),
       HasSubstr("first parameter must be pointer to PhysicalStorageBuffer"));
+}
+
+// Shared shader template for SPV_NV_cooperative_matrix_decode_vector tests.
+// `matrix_id` selects which result-matrix type the load uses
+// (%f16matA / %f16matB / %f16matAcc).  When `include_decode_vec_cap` is false,
+// the new capability and extension are omitted from the module so that we can
+// exercise the "capability not declared" diagnostic.  `extra_types`,
+// `main_body`, and `after_main` mirror GenCoopMat2Shader.
+std::string GenCoopMat2DecodeVecShader(
+    const std::string& extra_types, const std::string& main_body,
+    const std::string& after_main, bool include_decode_vec_cap = true,
+    const std::string& matrix_id = "%f16matA",
+    const std::string& extra_decorations = "") {
+  std::string caps = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability PhysicalStorageBufferAddresses
+OpCapability VulkanMemoryModel
+OpCapability CooperativeMatrixKHR
+OpCapability TensorAddressingNV
+OpCapability CooperativeMatrixTensorAddressingNV
+OpCapability CooperativeMatrixBlockLoadsNV
+OpCapability LongVectorEXT
+)";
+  if (include_decode_vec_cap) {
+    caps += "OpCapability CooperativeMatrixDecodeVectorNV\n";
+  }
+  std::string exts = R"(OpExtension "SPV_KHR_physical_storage_buffer"
+OpExtension "SPV_KHR_storage_buffer_storage_class"
+OpExtension "SPV_NV_tensor_addressing"
+OpExtension "SPV_NV_cooperative_matrix2"
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_EXT_long_vector"
+)";
+  if (include_decode_vec_cap) {
+    exts += "OpExtension \"SPV_NV_cooperative_matrix_decode_vector\"\n";
+  }
+  std::string body = R"(
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+
+OpDecorate %f16_arr ArrayStride 2
+OpDecorate %struct Block
+OpMemberDecorate %struct 0 Offset 0
+OpDecorate %ssbo Binding 0
+OpDecorate %ssbo DescriptorSet 0
+)" + extra_decorations +
+                     R"(
+
+%void = OpTypeVoid
+%bool = OpTypeBool
+%func = OpTypeFunction %void
+%f16 = OpTypeFloat 16
+%f32 = OpTypeFloat 32
+%u32 = OpTypeInt 32 0
+%s32 = OpTypeInt 32 1
+
+%v2f16 = OpTypeVector %f16 2
+%v3f16 = OpTypeVector %f16 3
+%v4f16 = OpTypeVector %f16 4
+%v8f16 = OpTypeVector %f16 8
+%v2f32 = OpTypeVector %f32 2
+
+%s32_0 = OpConstant %s32 0
+%f16_0 = OpConstant %f16 0
+%v2f16_0 = OpConstantNull %v2f16
+%v3f16_0 = OpConstantNull %v3f16
+%v4f16_0 = OpConstantNull %v4f16
+%v8f16_0 = OpConstantNull %v8f16
+%v2f32_0 = OpConstantNull %v2f32
+%u32_2 = OpConstant %u32 2
+%u32_4 = OpConstant %u32 4
+%u32_8 = OpConstant %u32 8
+%use_A = OpConstant %u32 0
+%use_B = OpConstant %u32 1
+%use_Acc = OpConstant %u32 2
+%workgroup = OpConstant %u32 2
+%subgroup = OpConstant %u32 3
+
+%f16_arr = OpTypeRuntimeArray %f16
+%struct = OpTypeStruct %f16_arr
+%ssbo_ptr = OpTypePointer StorageBuffer %struct
+%ssbo = OpVariable %ssbo_ptr StorageBuffer
+%array_ssbo_ptr = OpTypePointer StorageBuffer %f16_arr
+%psbptr = OpTypePointer PhysicalStorageBuffer %f16_arr
+
+%f16matA = OpTypeCooperativeMatrixKHR %f16 %workgroup %u32_8 %u32_8 %use_A
+%f16matB = OpTypeCooperativeMatrixKHR %f16 %workgroup %u32_8 %u32_8 %use_B
+%f16matAcc = OpTypeCooperativeMatrixKHR %f16 %subgroup %u32_8 %u32_8 %use_Acc
+
+%arr2 = OpTypeArray %u32 %u32_2
+%functy_f16 = OpTypeFunction %f16 %psbptr %arr2 %arr2
+%functy_v2f16 = OpTypeFunction %v2f16 %psbptr %arr2 %arr2
+%functy_v3f16 = OpTypeFunction %v3f16 %psbptr %arr2 %arr2
+%functy_v4f16 = OpTypeFunction %v4f16 %psbptr %arr2 %arr2
+%functy_v8f16 = OpTypeFunction %v8f16 %psbptr %arr2 %arr2
+%functy_v2f32 = OpTypeFunction %v2f32 %psbptr %arr2 %arr2
+
+%clamp_const = OpConstant %u32 0
+%dim_const = OpConstant %u32 2
+%hasdim = OpConstantFalse %bool
+%p0 = OpConstant %u32 0
+%p1 = OpConstant %u32 1
+%layout = OpTypeTensorLayoutNV %dim_const %clamp_const
+%view = OpTypeTensorViewNV %dim_const %hasdim %p0 %p1
+)" + extra_types + R"(
+
+%main = OpFunction %void None %func
+%main_entry = OpLabel
+%array_ptr = OpAccessChain %array_ssbo_ptr %ssbo %s32_0
+%mat = OpUndef )" + matrix_id +
+                     R"(
+
+%tl = OpCreateTensorLayoutNV %layout
+%tv = OpCreateTensorViewNV %view
+)" + main_body + R"(
+OpReturn
+OpFunctionEnd
+)" + after_main;
+
+  return caps + exts + body;
+}
+
+// Helpers below build "decode_func + load instruction" pairs for various V
+// and component types.
+static std::string ScalarDecodeFuncF16(const std::string& name) {
+  return "\n%" + name + " = OpFunction %f16 None %functy_f16\n%psb_" + name +
+         " = OpFunctionParameter %psbptr\n%c0_" + name +
+         " = OpFunctionParameter %arr2\n%c1_" + name +
+         " = OpFunctionParameter %arr2\n%entry_" + name +
+         " = OpLabel\nOpReturnValue %f16_0\nOpFunctionEnd\n";
+}
+static std::string VectorDecodeFunc(const std::string& name,
+                                    const std::string& functy,
+                                    const std::string& vec_t,
+                                    const std::string& null_id) {
+  return "\n%" + name + " = OpFunction %" + vec_t + " None %" + functy +
+         "\n%psb_" + name + " = OpFunctionParameter %psbptr\n%c0_" + name +
+         " = OpFunctionParameter %arr2\n%c1_" + name +
+         " = OpFunctionParameter %arr2\n%entry_" + name +
+         " = OpLabel\nOpReturnValue %" + null_id + "\nOpFunctionEnd\n";
+}
+
+// ---- Scalar-only DecodeFunc (the SPV_NV_cooperative_matrix2 baseline) ----
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorScalarDecodePass) {
+  // Scalar-only DecodeFunc path must continue to work without the new
+  // CooperativeMatrixDecodeVectorNV capability declared.
+  std::string spirv =
+      GenCoopMat2DecodeVecShader("",
+                                 R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc %scalar
+      )",
+                                 ScalarDecodeFuncF16("scalar"),
+                                 /*include_decode_vec_cap=*/false);
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorScalarDecodeWithDecodeVecCapPass) {
+  // Regression: declaring CooperativeMatrixDecodeVectorNV must not break the
+  // existing scalar-only DecodeFunc path.
+  std::string spirv = GenCoopMat2DecodeVecShader("",
+                                                 R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc %scalar
+      )",
+                                                 ScalarDecodeFuncF16("scalar"));
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorScalarDecodeVectorReturnFail) {
+  // DecodeFunc must be scalar-returning. the vector path is reachable only via
+  // DecodeVectorFunc.
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      "",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc %vec
+      )",
+      VectorDecodeFunc("vec", "functy_v2f16", "v2f16", "v2f16_0"));
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(), HasSubstr("DecodeFunc <id>"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("return type must match matrix component type"));
+}
+
+// ---- DecodeVectorFunc positive cases ----
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeVectorFuncV2Pass) {
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      "",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc|DecodeVectorFunc %scalar %vec
+      )",
+      ScalarDecodeFuncF16("scalar") +
+          VectorDecodeFunc("vec", "functy_v2f16", "v2f16", "v2f16_0"));
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeVectorFuncV4Pass) {
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      "",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc|DecodeVectorFunc %scalar %vec
+      )",
+      ScalarDecodeFuncF16("scalar") +
+          VectorDecodeFunc("vec", "functy_v4f16", "v4f16", "v4f16_0"));
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeVectorFuncV8Pass) {
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      "",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc|DecodeVectorFunc %scalar %vec
+      )",
+      ScalarDecodeFuncF16("scalar") +
+          VectorDecodeFunc("vec", "functy_v8f16", "v8f16", "v8f16_0"));
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeVectorFuncMatrixBPass) {
+  // No restriction on Use: MatrixBKHR works without a TensorView.
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      "",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matB %array_ptr %mat %tl None DecodeFunc|DecodeVectorFunc %scalar %vec
+      )",
+      ScalarDecodeFuncF16("scalar") +
+          VectorDecodeFunc("vec", "functy_v2f16", "v2f16", "v2f16_0"),
+      /*include_decode_vec_cap=*/true, /*matrix_id=*/"%f16matB");
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+TEST_F(ValidateMemory,
+       CoopMat2LoadTensorDecodeVectorFuncMatrixAccumulatorPass) {
+  // No restriction on Use: MatrixAccumulatorKHR is now permitted.
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      "",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matAcc %array_ptr %mat %tl None DecodeFunc|DecodeVectorFunc %scalar %vec
+      )",
+      ScalarDecodeFuncF16("scalar") +
+          VectorDecodeFunc("vec", "functy_v2f16", "v2f16", "v2f16_0"),
+      /*include_decode_vec_cap=*/true, /*matrix_id=*/"%f16matAcc");
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeVectorFuncWithTensorViewPass) {
+  // No restriction on TensorView: any view that is legal on the underlying
+  // load is legal here too.
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      "",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None TensorView|DecodeFunc|DecodeVectorFunc %tv %scalar %vec
+      )",
+      ScalarDecodeFuncF16("scalar") +
+          VectorDecodeFunc("vec", "functy_v2f16", "v2f16", "v2f16_0"));
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeVectorFuncSpecConstLengthPass) {
+  // OpTypeVectorIdEXT with a spec-constant length: V is not statically
+  // known, so the V-in-{2,4,8} check must not fire.
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      R"(
+%spec_v = OpSpecConstant %u32 4
+%v_spec_f16 = OpTypeVectorIdEXT %f16 %spec_v
+%v_spec_f16_0 = OpConstantNull %v_spec_f16
+%functy_v_spec_f16 = OpTypeFunction %v_spec_f16 %psbptr %arr2 %arr2
+)",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc|DecodeVectorFunc %scalar %vec
+      )",
+      ScalarDecodeFuncF16("scalar") +
+          VectorDecodeFunc("vec", "functy_v_spec_f16", "v_spec_f16",
+                           "v_spec_f16_0"),
+      /*include_decode_vec_cap=*/true, /*matrix_id=*/"%f16matA",
+      /*extra_decorations=*/"OpDecorate %spec_v SpecId 1\n");
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+// ---- DecodeVectorFunc negative cases ----
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeVectorFuncMissingCapFail) {
+  // The DecodeVectorFunc operand is gated by the
+  // CooperativeMatrixDecodeVectorNV capability in the grammar; without the
+  // capability declared, the generic per-operand capability check fires.
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      "",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc|DecodeVectorFunc %scalar %vec
+      )",
+      ScalarDecodeFuncF16("scalar") +
+          VectorDecodeFunc("vec", "functy_v2f16", "v2f16", "v2f16_0"),
+      /*include_decode_vec_cap=*/false);
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_CAPABILITY,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("CooperativeMatrixDecodeVectorNV"));
+}
+
+TEST_F(ValidateMemory,
+       CoopMat2LoadTensorDecodeVectorFuncWithoutDecodeFuncFail) {
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      "",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeVectorFunc %vec
+      )",
+      VectorDecodeFunc("vec", "functy_v2f16", "v2f16", "v2f16_0"));
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("DecodeVectorFunc requires DecodeFunc to also be specified"));
+}
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeVectorFuncScalarReturnFail) {
+  // DecodeVectorFunc's function must be vector-returning.
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      "",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc|DecodeVectorFunc %scalar %scalar2
+      )",
+      ScalarDecodeFuncF16("scalar") + ScalarDecodeFuncF16("scalar2"));
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(), HasSubstr("DecodeVectorFunc"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("return type must be a vector of the matrix component type"));
+}
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeVectorFuncBadVecLengthFail) {
+  // V = 3 is not in {2, 4, 8}.
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      "",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc|DecodeVectorFunc %scalar %vec
+      )",
+      ScalarDecodeFuncF16("scalar") +
+          VectorDecodeFunc("vec", "functy_v3f16", "v3f16", "v3f16_0"));
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("return vector length must be 2, 4, or 8"));
+}
+
+TEST_F(ValidateMemory,
+       CoopMat2LoadTensorDecodeVectorFuncWrongComponentTypeFail) {
+  // Vector component type does not match matrix component type.
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      "",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc|DecodeVectorFunc %scalar %vec
+      )",
+      ScalarDecodeFuncF16("scalar") +
+          VectorDecodeFunc("vec", "functy_v2f32", "v2f32", "v2f32_0"));
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("return type must be a vector of the matrix component type"));
+}
+
+TEST_F(ValidateMemory,
+       CoopMat2LoadTensorDecodeVectorFuncMismatchedPointeePass) {
+  // DecodeVectorFunc and DecodeFunc are independently validated and may use
+  // different PhysicalStorageBuffer pointee types - the implementation passes
+  // both functions the same byte address and lets the shader type-view it.
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      R"(
+%u32_arr = OpTypeRuntimeArray %u32
+%psbptr_u32 = OpTypePointer PhysicalStorageBuffer %u32_arr
+%functy_v2f16_alt = OpTypeFunction %v2f16 %psbptr_u32 %arr2 %arr2
+)",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc|DecodeVectorFunc %scalar %vec
+      )",
+      ScalarDecodeFuncF16("scalar") +
+          R"(
+%vec = OpFunction %v2f16 None %functy_v2f16_alt
+%psb_vec = OpFunctionParameter %psbptr_u32
+%c0_vec = OpFunctionParameter %arr2
+%c1_vec = OpFunctionParameter %arr2
+%entry_vec = OpLabel
+OpReturnValue %v2f16_0
+OpFunctionEnd
+)",
+      /*include_decode_vec_cap=*/true, /*matrix_id=*/"%f16matA",
+      /*extra_decorations=*/"OpDecorate %u32_arr ArrayStride 4\n");
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeVectorFuncBadFirstParamFail) {
+  // DecodeVectorFunc's first parameter must be a PhysicalStorageBuffer
+  // pointer, just like DecodeFunc's. Use a StorageBuffer pointer in both
+  // functions so the per-function storage-class check fires.
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      R"(
+%sbptr = OpTypePointer StorageBuffer %f16_arr
+%functy_f16_sb = OpTypeFunction %f16 %sbptr %arr2 %arr2
+%functy_v2f16_sb = OpTypeFunction %v2f16 %sbptr %arr2 %arr2
+)",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc|DecodeVectorFunc %scalar_sb %vec_sb
+      )",
+      R"(
+%scalar_sb = OpFunction %f16 None %functy_f16_sb
+%psb_scalar_sb = OpFunctionParameter %sbptr
+%c0_scalar_sb = OpFunctionParameter %arr2
+%c1_scalar_sb = OpFunctionParameter %arr2
+%entry_scalar_sb = OpLabel
+OpReturnValue %f16_0
+OpFunctionEnd
+%vec_sb = OpFunction %v2f16 None %functy_v2f16_sb
+%psb_vec_sb = OpFunctionParameter %sbptr
+%c0_vec_sb = OpFunctionParameter %arr2
+%c1_vec_sb = OpFunctionParameter %arr2
+%entry_vec_sb = OpLabel
+OpReturnValue %v2f16_0
+OpFunctionEnd
+)");
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("first parameter must be pointer to PhysicalStorageBuffer"));
+}
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeFuncNotAFunctionFail) {
+  // The DecodeFunc operand must reference an OpFunction. Pointing it at
+  // a non-function id (here, an integer constant) trips the defensive
+  // "is not a function" check.
+  std::string spirv = GenCoopMat2DecodeVecShader("",
+                                                 R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc %s32_0
+      )",
+                                                 "");
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(), HasSubstr("DecodeFunc <id>"));
+  EXPECT_THAT(getDiagnosticString(), HasSubstr("is not a function"));
+}
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeFuncNonArrayParamFail) {
+  // Second/third parameters must be OpTypeArray; a non-array param (here
+  // a bare uint32_t) trips the "must be array of 32-bit integer" check
+  // through the param-opcode branch (distinct from the dim-mismatch
+  // branch exercised by CoopMat2LoadTensorDecodeFuncArrayTypeFail).
+  std::string spirv = GenCoopMat2DecodeVecShader(
+      R"(
+%functy_f16_noarr = OpTypeFunction %f16 %psbptr %u32 %u32
+)",
+      R"(
+      %loaded = OpCooperativeMatrixLoadTensorNV %f16matA %array_ptr %mat %tl None DecodeFunc %scalar_noarr
+      )",
+      R"(
+%scalar_noarr = OpFunction %f16 None %functy_f16_noarr
+%psb_scalar_noarr = OpFunctionParameter %psbptr
+%c0_scalar_noarr = OpFunctionParameter %u32
+%c1_scalar_noarr = OpFunctionParameter %u32
+%entry_scalar_noarr = OpLabel
+OpReturnValue %f16_0
+OpFunctionEnd
+)");
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(), HasSubstr("DecodeFunc <id>"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("must be array of 32-bit integer"));
+}
+
+TEST_F(ValidateMemory, CoopMat2LoadTensorDecodeVectorFuncStoreFail) {
+  // OpCooperativeMatrixStoreTensorNV must not accept DecodeFunc or
+  // DecodeVectorFunc. The general validator rejects function-result <id>s
+  // outside an allowlisted set of opcodes; that allowlist contains
+  // OpCooperativeMatrixLoadTensorNV but not the store, so the store form
+  // is rejected with the generic "Invalid use of function result id"
+  // diagnostic before our store-specific check ever runs.
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability PhysicalStorageBufferAddresses
+OpCapability VulkanMemoryModel
+OpCapability CooperativeMatrixKHR
+OpCapability TensorAddressingNV
+OpCapability CooperativeMatrixTensorAddressingNV
+OpCapability CooperativeMatrixBlockLoadsNV
+OpCapability LongVectorEXT
+OpCapability CooperativeMatrixDecodeVectorNV
+OpExtension "SPV_KHR_physical_storage_buffer"
+OpExtension "SPV_KHR_storage_buffer_storage_class"
+OpExtension "SPV_NV_tensor_addressing"
+OpExtension "SPV_NV_cooperative_matrix2"
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_EXT_long_vector"
+OpExtension "SPV_NV_cooperative_matrix_decode_vector"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %f16_arr ArrayStride 2
+OpDecorate %struct Block
+OpMemberDecorate %struct 0 Offset 0
+OpDecorate %ssbo Binding 0
+OpDecorate %ssbo DescriptorSet 0
+%void = OpTypeVoid
+%bool = OpTypeBool
+%func = OpTypeFunction %void
+%f16 = OpTypeFloat 16
+%u32 = OpTypeInt 32 0
+%s32 = OpTypeInt 32 1
+%v2f16 = OpTypeVector %f16 2
+%s32_0 = OpConstant %s32 0
+%f16_0 = OpConstant %f16 0
+%v2f16_0 = OpConstantNull %v2f16
+%u32_2 = OpConstant %u32 2
+%u32_8 = OpConstant %u32 8
+%use_A = OpConstant %u32 0
+%workgroup = OpConstant %u32 2
+%f16_arr = OpTypeRuntimeArray %f16
+%struct = OpTypeStruct %f16_arr
+%ssbo_ptr = OpTypePointer StorageBuffer %struct
+%ssbo = OpVariable %ssbo_ptr StorageBuffer
+%array_ssbo_ptr = OpTypePointer StorageBuffer %f16_arr
+%psbptr = OpTypePointer PhysicalStorageBuffer %f16_arr
+%f16matA = OpTypeCooperativeMatrixKHR %f16 %workgroup %u32_8 %u32_8 %use_A
+%arr2 = OpTypeArray %u32 %u32_2
+%functy_f16 = OpTypeFunction %f16 %psbptr %arr2 %arr2
+%clamp_const = OpConstant %u32 0
+%dim_const = OpConstant %u32 2
+%layout = OpTypeTensorLayoutNV %dim_const %clamp_const
+%scalar = OpFunction %f16 None %functy_f16
+%psb_scalar = OpFunctionParameter %psbptr
+%c0_scalar = OpFunctionParameter %arr2
+%c1_scalar = OpFunctionParameter %arr2
+%entry_scalar = OpLabel
+OpReturnValue %f16_0
+OpFunctionEnd
+%main = OpFunction %void None %func
+%main_entry = OpLabel
+%array_ptr = OpAccessChain %array_ssbo_ptr %ssbo %s32_0
+%mat = OpUndef %f16matA
+%tl = OpCreateTensorLayoutNV %layout
+OpCooperativeMatrixStoreTensorNV %array_ptr %mat %tl None DecodeFunc %scalar
+OpReturn
+OpFunctionEnd
+)";
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Invalid use of function result id"));
+}
+
+TEST_F(ValidateMemory, PtrAccessChainNodePayloadArray) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpCapability ShaderEnqueueAMDX
+OpExtension "SPV_AMDX_shader_enqueue"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main" %input
+%uint = OpTypeInt 32 0
+%uint_0 = OpConstant %uint 0
+%uint_1 = OpConstant %uint 1
+%node0 = OpConstantStringAMDX "node0"
+%node1 = OpConstantStringAMDX "node1"
+%node2 = OpConstantStringAMDX "node2"
+%S = OpTypeStruct %uint
+%_payloadarr_S = OpTypeNodePayloadArrayAMDX %S
+%_ptr_NodePayloadAMDX__payloadarr_S = OpTypePointer NodePayloadAMDX %_payloadarr_S
+%_ptr_NodePayloadAMDX_uint = OpTypePointer NodePayloadAMDX %uint
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%input = OpVariable %_ptr_NodePayloadAMDX__payloadarr_S NodePayloadAMDX
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%x = OpAccessChain %_ptr_NodePayloadAMDX_uint %input %uint_0 %uint_0
+OpReturn
+OpFunctionEnd
+)";
+
+  spv_target_env env = SPV_ENV_UNIVERSAL_1_4;
+  CompileSuccessfully(spirv, env);
+  EXPECT_THAT(SPV_SUCCESS, ValidateInstructions(env));
+}
+
+std::string GenCoopVecLoadStoreShader(const std::string& storeMemoryAccess,
+                                      const std::string& loadMemoryAccess) {
+  std::string s = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability StorageBuffer16BitAccess
+OpCapability VulkanMemoryModel
+OpCapability CooperativeVectorNV
+OpCapability ReplicatedCompositesEXT
+OpExtension "SPV_EXT_replicated_composites"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_NV_cooperative_vector"
+%1 = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical Vulkan
+OpEntryPoint GLCompute %4 "main" %48 %73
+OpExecutionMode %4 LocalSize 1 1 1
+
+OpDecorate %45 ArrayStride 2
+OpDecorate %46 Block
+OpMemberDecorate %46 0 Offset 0
+OpDecorate %48 Binding 0
+OpDecorate %48 DescriptorSet 0
+
+%2 = OpTypeVoid
+%3 = OpTypeFunction %2
+%6 = OpTypeInt 32 0
+%49 = OpTypeInt 32 1
+%41 = OpTypeFloat 16
+
+%14 = OpConstant %6 1
+%50 = OpConstant %49 0
+%82 = OpConstant %6 5
+
+%42 = OpTypeCooperativeVectorNV %41 %14
+%43 = OpTypePointer Function %42
+
+%45 = OpTypeRuntimeArray %41
+%46 = OpTypeStruct %45
+%47 = OpTypePointer StorageBuffer %46
+%48 = OpVariable %47 StorageBuffer
+%51 = OpTypePointer StorageBuffer %45
+
+%57 = OpTypePointer Private %42
+%73 = OpVariable %57 Private
+
+%4 = OpFunction %2 None %3
+%5 = OpLabel
+%52 = OpAccessChain %51 %48 %50
+%56 = OpCooperativeVectorLoadNV %42 %52 %50 )" +
+                  loadMemoryAccess + R"( %82
+%77 = OpLoad %42 %73
+OpCooperativeVectorStoreNV %52 %50 %77 )" +
+                  storeMemoryAccess + R"( %82
+OpReturn
+OpFunctionEnd
+)";
+
+  return s;
+}
+
+TEST_F(ValidateMemory, CoopVecLoadStoreSuccess) {
+  std::string spirv =
+      GenCoopVecLoadStoreShader("MakePointerAvailableKHR|NonPrivatePointerKHR",
+                                "MakePointerVisibleKHR|NonPrivatePointerKHR");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+}
+
+TEST_F(ValidateMemory, CoopVecStoreMemoryAccessFail) {
+  std::string spirv =
+      GenCoopVecLoadStoreShader("MakePointerVisibleKHR|NonPrivatePointerKHR",
+                                "MakePointerVisibleKHR|NonPrivatePointerKHR");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("MakePointerVisibleKHR cannot be used with OpStore"));
+}
+
+TEST_F(ValidateMemory, CoopVecLoadMemoryAccessFail) {
+  std::string spirv =
+      GenCoopVecLoadStoreShader("MakePointerAvailableKHR|NonPrivatePointerKHR",
+                                "MakePointerAvailableKHR|NonPrivatePointerKHR");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("MakePointerAvailableKHR cannot be used with OpLoad"));
+}
+
+TEST_F(ValidateMemory, CoopVecInvalidStorageClassFail) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability CooperativeVectorNV
+OpCapability ReplicatedCompositesEXT
+OpExtension "SPV_NV_cooperative_vector"
+OpExtension "SPV_EXT_replicated_composites"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 1 1 1
+%void = OpTypeVoid
+%func = OpTypeFunction %void
+%f16 = OpTypeFloat 16
+%u32 = OpTypeInt 32 0
+
+%u32_8 = OpConstant %u32 8
+%use_A = OpConstant %u32 0
+%subgroup = OpConstant %u32 3
+
+%f16vec = OpTypeCooperativeVectorNV %f16 %u32_8
+
+%str = OpTypeStruct %f16vec
+%str_ptr = OpTypePointer Workgroup %str
+%sh = OpVariable %str_ptr Workgroup
+
+%main = OpFunction %void None %func
+%main_entry = OpLabel
+
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "Cooperative vector types (or types containing them) can only be "
+          "allocated in Function or Private storage classes or as function "
+          "parameters"));
+}
+
+std::string GenCoopVecShader(const std::string& extra_types,
+                             const std::string& main_body,
+                             const std::string& execution_modes = "") {
+  const std::string prefix =
+      R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int64
+OpCapability Int16
+OpCapability StorageBuffer16BitAccess
+OpCapability VulkanMemoryModel
+OpCapability CooperativeVectorNV
+OpCapability CooperativeVectorTrainingNV
+OpCapability ReplicatedCompositesEXT
+OpCapability Shader64BitIndexingEXT
+OpExtension "SPV_EXT_replicated_composites"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_NV_cooperative_vector"
+OpExtension "SPV_EXT_shader_64bit_indexing"
+%1 = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical Vulkan
+OpEntryPoint GLCompute %main "main" %48 %73
+OpExecutionMode %main LocalSize 1 1 1
+
+)" + execution_modes +
+      R"(
+
+OpDecorate %f16_arr ArrayStride 2
+OpDecorate %46 Block
+OpMemberDecorate %46 0 Offset 0
+OpDecorate %48 Binding 0
+OpDecorate %48 DescriptorSet 0
+
+%void = OpTypeVoid
+%func = OpTypeFunction %void
+%u32 = OpTypeInt 32 0
+%s32 = OpTypeInt 32 1
+%f16 = OpTypeFloat 16
+%bool = OpTypeBool
+
+%false = OpConstantFalse %bool
+%u32_4 = OpConstant %u32 4
+%u32_8 = OpConstant %u32 8
+%s32_0 = OpConstant %s32 0
+%f16_0 = OpConstant %f16 0
+
+%f16vec4 = OpTypeCooperativeVectorNV %f16 %u32_4
+%f16vec8 = OpTypeCooperativeVectorNV %f16 %u32_8
+
+%f16_arr = OpTypeRuntimeArray %f16
+%46 = OpTypeStruct %f16_arr
+%47 = OpTypePointer StorageBuffer %46
+%48 = OpVariable %47 StorageBuffer
+%51 = OpTypePointer StorageBuffer %f16_arr
+
+%57 = OpTypePointer Private %f16vec4
+%73 = OpVariable %57 Private
+%u32ptr = OpTypePointer Function %u32
+
+%input4 = OpConstantCompositeReplicateEXT %f16vec4 %f16_0
+%input8 = OpConstantCompositeReplicateEXT %f16vec8 %f16_0
+%interp = OpConstant %u32 0
+%offset = OpConstant %u32 0
+
+)";
+
+  const std::string func_begin =
+      R"(
+%main = OpFunction %void None %func
+%main_entry = OpLabel
+%u32var = OpVariable %u32ptr Function
+%array_ptr = OpAccessChain %51 %48 %s32_0
+)";
+
+  const std::string suffix =
+      R"(
+OpReturn
+OpFunctionEnd)";
+
+  return prefix + extra_types + func_begin + main_body + suffix;
+}
+
+TEST_F(ValidateMemory, CoopVecMatMulSuccess) {
+  std::string spirv = GenCoopVecShader("",
+                                       R"(
+%result0 = OpCooperativeVectorMatrixMulAddNV %f16vec4 %input4 %interp %array_ptr %offset %interp %array_ptr %offset %interp %u32_4 %u32_4 %s32_0 %false
+%result1 = OpCooperativeVectorMatrixMulAddNV %f16vec4 %input8 %interp %array_ptr %offset %interp %array_ptr %offset %interp %u32_4 %u32_8 %s32_0 %false
+%result2 = OpCooperativeVectorMatrixMulAddNV %f16vec8 %input4 %interp %array_ptr %offset %interp %array_ptr %offset %interp %u32_8 %u32_4 %s32_0 %false
+%result3 = OpCooperativeVectorMatrixMulNV %f16vec4 %input4 %interp %array_ptr %offset %interp %u32_4 %u32_4 %s32_0 %false
+%result4 = OpCooperativeVectorMatrixMulNV %f16vec4 %input8 %interp %array_ptr %offset %interp %u32_4 %u32_8 %s32_0 %false
+%result5 = OpCooperativeVectorMatrixMulNV %f16vec8 %input4 %interp %array_ptr %offset %interp %u32_8 %u32_4 %s32_0 %false
+
+OpCooperativeVectorReduceSumAccumulateNV %array_ptr %offset %input4
+OpCooperativeVectorOuterProductAccumulateNV %array_ptr %offset %input4 %input8 %interp %interp
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+}
+
+TEST_F(ValidateMemory, CoopVecMatMulKMismatchFail) {
+  std::string spirv = GenCoopVecShader(R"()",
+                                       R"(
+%result1 = OpCooperativeVectorMatrixMulAddNV %f16vec4 %input8 %interp %array_ptr %offset %interp %array_ptr %offset %interp %u32_4 %u32_4 %s32_0 %false
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpCooperativeVectorMatrixMulAddNV input number of "
+                        "components 8 does not match K 4"));
+}
+
+TEST_F(ValidateMemory, CoopVecMatMulPackedKMismatchPass) {
+  std::string spirv = GenCoopVecShader(
+      R"(
+%packed = OpConstant %u32 1000491001
+      )",
+      R"(
+%result1 = OpCooperativeVectorMatrixMulAddNV %f16vec4 %input8 %packed %array_ptr %offset %interp %array_ptr %offset %interp %u32_4 %u32_4 %s32_0 %false
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+}
+
+TEST_F(ValidateMemory, CoopVecMatMulMMismatchFail) {
+  std::string spirv = GenCoopVecShader(R"()",
+                                       R"(
+%result1 = OpCooperativeVectorMatrixMulAddNV %f16vec8 %input8 %interp %array_ptr %offset %interp %array_ptr %offset %interp %u32_4 %u32_8 %s32_0 %false
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpCooperativeVectorMatrixMulAddNV result type number "
+                        "of components 8 does not match M 4"));
+}
+
+TEST_F(ValidateMemory, CoopVecMatMulTransposeTypeFail) {
+  std::string spirv = GenCoopVecShader(R"()",
+                                       R"(
+%result0 = OpCooperativeVectorMatrixMulAddNV %f16vec4 %input4 %interp %array_ptr %offset %interp %array_ptr %offset %interp %u32_4 %u32_4 %s32_0 %s32_0
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpCooperativeVectorMatrixMulAddNV Transpose <id> "
+                        "'16[%int_0]' is not a scalar boolean"));
+}
+
+TEST_F(ValidateMemory, CoopVecMatMulInputInterpretationNotConstantFail) {
+  std::string spirv = GenCoopVecShader(
+      R"(
+      )",
+      R"(
+%u32val = OpLoad %u32 %u32var
+%result0 = OpCooperativeVectorMatrixMulAddNV %f16vec4 %input4 %u32val %array_ptr %offset %interp %array_ptr %offset %interp %u32_4 %u32_4 %s32_0 %false
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpCooperativeVectorMatrixMulAddNV InputInterpretation "
+                        "<id> '31[%31]' is not a constant instruction"));
+}
+
+TEST_F(ValidateMemory, CoopVecMatMulMatrixInterpretationNotConstantFail) {
+  std::string spirv = GenCoopVecShader(
+      R"(
+      )",
+      R"(
+%u32val = OpLoad %u32 %u32var
+%result0 = OpCooperativeVectorMatrixMulAddNV %f16vec4 %input4 %interp %array_ptr %offset %u32val %array_ptr %offset %interp %u32_4 %u32_4 %s32_0 %false
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("OpCooperativeVectorMatrixMulAddNV MatrixInterpretation <id> "
+                "'31[%31]' is not a constant instruction"));
+}
+
+TEST_F(ValidateMemory, CoopVecMatMulBiasInterpretationNotConstantFail) {
+  std::string spirv = GenCoopVecShader(
+      R"(
+      )",
+      R"(
+%u32val = OpLoad %u32 %u32var
+%result0 = OpCooperativeVectorMatrixMulAddNV %f16vec4 %input4 %interp %array_ptr %offset %interp %array_ptr %offset %u32val %u32_4 %u32_4 %s32_0 %false
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpCooperativeVectorMatrixMulAddNV BiasInterpretation "
+                        "<id> '31[%31]' is not a constant instruction"));
+}
+
+TEST_F(ValidateMemory, CoopVecMatMulInputInterpretationNotInt32Fail) {
+  std::string spirv = GenCoopVecShader(
+      R"(
+      )",
+      R"(
+%result0 = OpCooperativeVectorMatrixMulAddNV %f16vec4 %input4 %false %array_ptr %offset %interp %array_ptr %offset %interp %u32_4 %u32_4 %s32_0 %false
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpCooperativeVectorMatrixMulAddNV InputInterpretation "
+                        "type <id> '12[%bool]' is not a 32 bit integer"));
+}
+
+TEST_F(ValidateMemory, CoopVecOuterProductABMismatchFail) {
+  std::string spirv = GenCoopVecShader(
+      R"(
+%f32 = OpTypeFloat 32
+%f32vec8 = OpTypeCooperativeVectorNV %f32 %u32_8
+%f32_0 = OpConstant %f32 0
+%input8f32 = OpConstantCompositeReplicateEXT %f32vec8 %f32_0
+      )",
+      R"(
+OpCooperativeVectorOuterProductAccumulateNV %array_ptr %offset %input4 %input8f32 %interp %interp
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("OpCooperativeVectorOuterProductAccumulateNV A and B component "
+                "types '11[%half]' and '28[%float]' do not match"));
+}
+
+TEST_F(ValidateMemory, CoopVecOuterProductIntOffsetFail) {
+  std::string spirv = GenCoopVecShader(
+      R"(
+%u16 = OpTypeInt 16 0
+%u16_0 = OpConstant %u16 0
+      )",
+      R"(
+OpCooperativeVectorOuterProductAccumulateNV %array_ptr %u16_0 %input4 %input8 %interp %interp
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("OpCooperativeVectorOuterProductAccumulateNV Offset "
+                "type <id> '28[%ushort]' is not a 32 or 64 bit integer"));
+}
+
+TEST_F(ValidateMemory, CoopVecOuterProductInt32MatrixStrideFail) {
+  std::string spirv = GenCoopVecShader(
+      R"(
+%u64 = OpTypeInt 64 0
+%u64_0 = OpConstant %u64 0
+      )",
+      R"(
+OpCooperativeVectorOuterProductAccumulateNV %array_ptr %offset %input4 %input8 %interp %interp %u64_0
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("OpCooperativeVectorOuterProductAccumulateNV MatrixStride type "
+                "<id> '28[%ulong]' is not a 32 bit integer"));
+}
+
+TEST_F(ValidateMemory, CoopVecOuterProductVectorTypeFail) {
+  std::string spirv = GenCoopVecShader(
+      R"(
+%f16v4 = OpTypeVector %f16 4
+%f16c = OpConstantCompositeReplicateEXT %f16v4 %f16_0
+      )",
+      R"(
+OpCooperativeVectorOuterProductAccumulateNV %array_ptr %offset %f16c %input8 %interp %interp
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpCooperativeVectorOuterProductAccumulateNV A type "
+                        "<id> '28[%v4half]' is not a cooperative vector type"));
+}
+
+TEST_F(ValidateMemory, CoopVecReduceSumIntOffsetFail) {
+  std::string spirv = GenCoopVecShader(
+      R"(
+%u16 = OpTypeInt 16 0
+%u16_0 = OpConstant %u16 0
+      )",
+      R"(
+OpCooperativeVectorReduceSumAccumulateNV %array_ptr %u16_0 %input4
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpCooperativeVectorReduceSumAccumulateNV Offset type "
+                        "<id> '28[%ushort]' is not a 32 or 64 bit integer"));
+}
+
+TEST_F(ValidateMemory, CoopVecOuterProductInt64OffsetPass) {
+  std::string spirv = GenCoopVecShader(
+      R"(
+%u64 = OpTypeInt 64 0
+%u64_0 = OpConstant %u64 0
+      )",
+      R"(
+OpCooperativeVectorOuterProductAccumulateNV %array_ptr %u64_0 %input4 %input8 %interp %interp
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+}
+
+TEST_F(ValidateMemory, CoopVecReduceSumVectorTypeFail) {
+  std::string spirv = GenCoopVecShader(
+      R"(
+%f16v4 = OpTypeVector %f16 4
+%f16c = OpConstantCompositeReplicateEXT %f16v4 %f16_0
+      )",
+      R"(
+OpCooperativeVectorReduceSumAccumulateNV %array_ptr %offset %f16c
+      )");
+
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1_SPIRV_1_4);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID,
+            ValidateInstructions(SPV_ENV_VULKAN_1_1_SPIRV_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpCooperativeVectorReduceSumAccumulateNV V type <id> "
+                        "'28[%v4half]' is not a cooperative vector type."));
+}
+
+TEST_F(ValidateMemory, CoopMatMatrixBFloatFAdd) {
+  const std::string body =
+      R"(
+               OpCapability Shader
+               OpCapability Float16
+               OpCapability BFloat16TypeKHR
+               OpCapability BFloat16CooperativeMatrixKHR
+               OpCapability VulkanMemoryModel
+               OpCapability CooperativeMatrixKHR
+               OpExtension "SPV_KHR_bfloat16"
+               OpExtension "SPV_KHR_vulkan_memory_model"
+               OpExtension "SPV_KHR_cooperative_matrix"
+               OpMemoryModel Logical Vulkan
+               OpEntryPoint GLCompute %main "main" %_ %__0 %__1
+               OpExecutionMode %main LocalSize 32 1 1
+               OpDecorate %_arr_bfloat16_uint_64 ArrayStride 2
+               OpDecorate %A Block
+               OpMemberDecorate %A 0 Offset 0
+               OpDecorate %_ Binding 0
+               OpDecorate %_ DescriptorSet 0
+               OpDecorate %_arr_bfloat16_uint_64_0 ArrayStride 2
+               OpDecorate %B Block
+               OpMemberDecorate %B 0 Offset 0
+               OpDecorate %__0 Binding 1
+               OpDecorate %__0 DescriptorSet 0
+               OpDecorate %_arr_bfloat16_uint_64_1 ArrayStride 2
+               OpDecorate %R Block
+               OpMemberDecorate %R 0 Offset 0
+               OpDecorate %__1 Binding 2
+               OpDecorate %__1 DescriptorSet 0
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+   %bfloat16 = OpTypeFloat 16 BFloat16KHR
+       %uint = OpTypeInt 32 0
+     %uint_3 = OpConstant %uint 3
+     %uint_8 = OpConstant %uint 8
+     %uint_0 = OpConstant %uint 0
+         %12 = OpTypeCooperativeMatrixKHR %bfloat16 %uint_3 %uint_8 %uint_8 %uint_0
+%_ptr_Function_12 = OpTypePointer Function %12
+    %uint_64 = OpConstant %uint 64
+%_arr_bfloat16_uint_64 = OpTypeArray %bfloat16 %uint_64
+          %A = OpTypeStruct %_arr_bfloat16_uint_64
+%_ptr_StorageBuffer_A = OpTypePointer StorageBuffer %A
+          %_ = OpVariable %_ptr_StorageBuffer_A StorageBuffer
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_StorageBuffer_bfloat16 = OpTypePointer StorageBuffer %bfloat16
+%_arr_bfloat16_uint_64_0 = OpTypeArray %bfloat16 %uint_64
+          %B = OpTypeStruct %_arr_bfloat16_uint_64_0
+%_ptr_StorageBuffer_B = OpTypePointer StorageBuffer %B
+        %__0 = OpVariable %_ptr_StorageBuffer_B StorageBuffer
+     %v3uint = OpTypeVector %uint 3
+    %uint_32 = OpConstant %uint 32
+     %uint_1 = OpConstant %uint 1
+         %35 = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+%_arr_bfloat16_uint_64_1 = OpTypeArray %bfloat16 %uint_64
+          %R = OpTypeStruct %_arr_bfloat16_uint_64_1
+%_ptr_StorageBuffer_R = OpTypePointer StorageBuffer %R
+        %__1 = OpVariable %_ptr_StorageBuffer_R StorageBuffer
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+       %matX = OpVariable %_ptr_Function_12 Function
+       %matY = OpVariable %_ptr_Function_12 Function
+         %23 = OpAccessChain %_ptr_StorageBuffer_bfloat16 %_ %int_0 %uint_0
+         %24 = OpCooperativeMatrixLoadKHR %12 %23 %int_0 %uint_8 None
+               OpStore %matX %24
+         %30 = OpAccessChain %_ptr_StorageBuffer_bfloat16 %__0 %int_0 %uint_0
+         %31 = OpCooperativeMatrixLoadKHR %12 %30 %int_0 %uint_8 None
+               OpStore %matY %31
+         %32 = OpLoad %12 %matX
+         %33 = OpLoad %12 %matY
+         %34 = OpFAdd %12 %32 %33
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("FAdd doesn't support BFloat16 type"));
+}
+
+TEST_F(ValidateMemory, CoopMatMatrixFloat8FAdd) {
+  const std::string body =
+      R"(
+               OpCapability Shader
+               OpCapability Float8EXT
+               OpCapability Float8CooperativeMatrixEXT
+               OpCapability VulkanMemoryModel
+               OpCapability CooperativeMatrixKHR
+               OpExtension "SPV_EXT_float8"
+               OpExtension "SPV_KHR_cooperative_matrix"
+               OpExtension "SPV_KHR_vulkan_memory_model"
+               OpMemoryModel Logical Vulkan
+               OpEntryPoint GLCompute %main "main"
+               OpExecutionMode %main LocalSize 32 1 1
+               OpDecorate %gl_WorkGroupSize BuiltIn WorkgroupSize
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+    %fp8e4m3 = OpTypeFloat 8 Float8E4M3EXT
+       %uint = OpTypeInt 32 0
+     %uint_3 = OpConstant %uint 3
+    %uint_16 = OpConstant %uint 16
+     %uint_0 = OpConstant %uint 0
+         %12 = OpTypeCooperativeMatrixKHR %fp8e4m3 %uint_3 %uint_16 %uint_16 %uint_0
+%_ptr_Function_12 = OpTypePointer Function %12
+     %v3uint = OpTypeVector %uint 3
+    %uint_32 = OpConstant %uint 32
+     %uint_1 = OpConstant %uint 1
+%gl_WorkGroupSize = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+       %matR = OpVariable %_ptr_Function_12 Function
+       %matX = OpVariable %_ptr_Function_12 Function
+       %matY = OpVariable %_ptr_Function_12 Function
+         %16 = OpLoad %12 %matX
+         %18 = OpLoad %12 %matY
+         %19 = OpFAdd %12 %16 %18
+               OpStore %matR %19
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("FAdd doesn't support FP8 E4M3/E5M2 types"));
+}
+
+TEST_F(ValidateMemory, PhysicalStorageBufferArray) {
+  const std::string body =
+      R"(
+              OpCapability Shader
+              OpCapability Int64
+              OpCapability PhysicalStorageBufferAddresses
+              OpExtension "SPV_KHR_storage_buffer_storage_class"
+              OpExtension "SPV_KHR_physical_storage_buffer"
+              OpMemoryModel PhysicalStorageBuffer64 GLSL450
+              OpEntryPoint GLCompute %18 "main"
+              OpExecutionMode %18 LocalSize 1 1 1
+              OpSource OpenCL_C 120
+              OpMemberDecorate %S 0 Offset 0
+              OpMemberDecorate %S 1 Offset 256
+              OpDecorate %array ArrayStride 16
+      %uint = OpTypeInt 32 0
+      %void = OpTypeVoid
+     %ulong = OpTypeInt 64 0
+     %float = OpTypeFloat 32
+   %v4float = OpTypeVector %float 4
+        %17 = OpTypeFunction %void
+   %ulong_0 = OpConstant %ulong 0
+    %uint_3 = OpConstant %uint 3
+     %array = OpTypeArray %v4float %uint_3
+         %S = OpTypeStruct %array %uint
+     %ptr_S = OpTypePointer PhysicalStorageBuffer %S
+   %float_0 = OpConstant %float 0
+ %v4float_0 = OpConstantComposite %v4float %float_0 %float_0 %float_0 %float_0
+        %23 = OpConstantComposite %array %v4float_0 %v4float_0 %v4float_0
+        %24 = OpConstantComposite %S %23 %uint_3
+        %18 = OpFunction %void None %17
+        %19 = OpLabel
+        %58 = OpConvertUToPtr %ptr_S %ulong_0
+              OpStore %58 %24 Aligned 4
+              OpReturn
+              OpFunctionEnd
+)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_VULKAN_1_0);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+}
+
+TEST_F(ValidateMemory, LongVectorPrivateStorageClassGood) {
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability LongVectorEXT
+OpExtension "SPV_EXT_long_vector"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %func "func"
+%float = OpTypeFloat 32
+%vec5 = OpTypeVector %float 5
+%vec5ptr = OpTypePointer Private %vec5
+%1 = OpVariable %vec5ptr Private
+%void = OpTypeVoid
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%2 = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+}
+
+TEST_F(ValidateMemory, LongVectorInputStorageClassBad) {
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability LongVectorEXT
+OpExtension "SPV_EXT_long_vector"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %func "func"
+%float = OpTypeFloat 32
+%vec5 = OpTypeVector %float 5
+%vec5ptr = OpTypePointer Input %vec5
+%1 = OpVariable %vec5ptr Input
+%void = OpTypeVoid
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%2 = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("Long vector types with more than 4 components (or types "
+                "containing them) not supported in storage class Input"));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-Type-12297"));
+}
+
+TEST_F(ValidateMemory, LongVectorMissingCapabilityBad) {
+  std::string spirv = R"(
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Vertex %func "func"
+%float = OpTypeFloat 32
+%vec5 = OpTypeVector %float 5
+%vec5ptr = OpTypePointer Private %vec5
+%1 = OpVariable %vec5ptr Private
+%void = OpTypeVoid
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%2 = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Illegal number of components (5) for TypeVector"));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-None-12295"));
+}
+
+TEST_F(ValidateMemory, LoadPointerFromPointer_DescriptorHeapCap) {
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability PhysicalStorageBufferAddresses
+OpCapability DescriptorHeapEXT
+OpExtension "SPV_EXT_descriptor_heap"
+OpMemoryModel PhysicalStorageBuffer64 GLSL450
+OpEntryPoint GLCompute %main "main" %pc
+OpExecutionMode %main LocalSize 1 1 1
+OpDecorate %block Block
+OpMemberDecorate %block 0 Offset 0
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_0 = OpConstant %uint 0
+%ptr_pssbo_uint = OpTypePointer PhysicalStorageBuffer %uint
+%ptr_pssbo_ptr = OpTypePointer PhysicalStorageBuffer %ptr_pssbo_uint
+%block = OpTypeStruct %ptr_pssbo_ptr
+%ptr_pc_block = OpTypePointer PushConstant %block
+%ptr_pc_ptr = OpTypePointer PushConstant %ptr_pssbo_ptr
+%pc = OpVariable %ptr_pc_block PushConstant
+%main = OpFunction %void None %void_fn
+%entry = OpLabel
+%gep = OpAccessChain %ptr_pc_ptr %pc %uint_0
+%ld1 = OpLoad %ptr_pssbo_ptr %gep Aligned 8
+%ld2 = OpLoad %ptr_pssbo_uint %ld1 Aligned 8
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_4);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_4));
+}
+
+TEST_F(ValidateMemory, OCPMicroscalingFloat4PrivateVariableGood) {
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability Float4EXT
+OpExtension "SPV_EXT_ocp_microscaling_types"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %func "func"
+OpExecutionMode %func LocalSize 1 1 1
+%fp4 = OpTypeFloat 4 Float4E2M1EXT
+%fp4ptr = OpTypePointer Private %fp4
+%var = OpVariable %fp4ptr Private
+%void = OpTypeVoid
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateMemory, OCPMicroscalingFloat6PrivateVariableGood) {
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability Float6EXT
+OpExtension "SPV_EXT_ocp_microscaling_types"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %func "func"
+OpExecutionMode %func LocalSize 1 1 1
+%fp6 = OpTypeFloat 6 Float6E3M2EXT
+%fp6ptr = OpTypePointer Private %fp6
+%var = OpVariable %fp6ptr Private
+%void = OpTypeVoid
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateMemory, OCPMicroscalingFloat4FunctionVariableGood) {
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability Float4EXT
+OpExtension "SPV_EXT_ocp_microscaling_types"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %func "func"
+OpExecutionMode %func LocalSize 1 1 1
+%fp4 = OpTypeFloat 4 Float4E2M1EXT
+%fp4ptr = OpTypePointer Function %fp4
+%void = OpTypeVoid
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%entry = OpLabel
+%var = OpVariable %fp4ptr Function
+OpReturn
+OpFunctionEnd
+)";
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateMemory, OCPMicroscalingFloat6FunctionVariableGood) {
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability Float6EXT
+OpExtension "SPV_EXT_ocp_microscaling_types"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %func "func"
+OpExecutionMode %func LocalSize 1 1 1
+%fp6 = OpTypeFloat 6 Float6E2M3EXT
+%fp6ptr = OpTypePointer Function %fp6
+%void = OpTypeVoid
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%entry = OpLabel
+%var = OpVariable %fp6ptr Function
+OpReturn
+OpFunctionEnd
+)";
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateMemory, OCPMicroscalingFloat6WorkgroupVariableBad) {
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability Float6EXT
+OpExtension "SPV_EXT_ocp_microscaling_types"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %func "func"
+OpExecutionMode %func LocalSize 1 1 1
+%fp6 = OpTypeFloat 6 Float6E3M2EXT
+%fp6ptr = OpTypePointer Workgroup %fp6
+%var = OpVariable %fp6ptr Workgroup
+%void = OpTypeVoid
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Cannot allocate a variable containing a Float4EXT or "
+                        "Float6EXT type in Workgroup storage class"));
+}
+
+TEST_F(ValidateMemory, OCPMicroscalingFloat4StructWorkgroupVariableBad) {
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability Float4EXT
+OpExtension "SPV_EXT_ocp_microscaling_types"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %func "func"
+OpExecutionMode %func LocalSize 1 1 1
+%fp4 = OpTypeFloat 4 Float4E2M1EXT
+%struct = OpTypeStruct %fp4
+%structptr = OpTypePointer Workgroup %struct
+%var = OpVariable %structptr Workgroup
+%void = OpTypeVoid
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Cannot allocate a variable containing a Float4EXT or "
+                        "Float6EXT type in Workgroup storage class"));
+}
+
+TEST_F(ValidateMemory, OCPMicroscalingE8M0WorkgroupVariableGood) {
+  std::string spirv = R"(
+OpCapability Shader
+OpCapability Float8UnsignedE8M0EXT
+OpExtension "SPV_EXT_ocp_microscaling_types"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %func "func"
+OpExecutionMode %func LocalSize 1 1 1
+%e8m0 = OpTypeFloat 8 Float8UnsignedE8M0EXT
+%e8m0ptr = OpTypePointer Workgroup %e8m0
+%var = OpVariable %e8m0ptr Workgroup
+%void = OpTypeVoid
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+  CompileSuccessfully(spirv.c_str(), SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateMemory, ArrayLength_BadPointer) {
+  std::string spirv = R"(
+               OpCapability ClipDistance
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpName %2097184 "pointer"
+       %void = OpTypeVoid
+          %6 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+       %8224 = OpFunction %void None %6
+      %65312 = OpLabel
+    %2097184 = OpArrayLength %uint %1 538976288
+               OpUnreachable
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("The Structure's type in OpArrayLength <id> "
+                        "'2[%pointer]' must be a pointer to an OpTypeStruct"));
+}
+
+TEST_F(ValidateMemory, CoopMatMatrixGetCoordinateResultTypeBad) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixGetCoordinateEXT
+OpExtension "SPV_EXT_cooperative_matrix_maintenance1"
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%func = OpTypeFunction %void
+%f16 = OpTypeFloat 16
+%u32 = OpTypeInt 32 0
+%i32 = OpTypeInt 32 1
+%uvec3 = OpTypeVector %u32 3
+
+%u32_8 = OpConstant %u32 8
+%use_A = OpConstant %u32 0
+%subgroup = OpConstant %u32 3
+
+%f16mat = OpTypeCooperativeMatrixKHR %f16 %subgroup %u32_8 %u32_8 %use_A
+
+%f16matp = OpTypePointer Private %f16mat
+%f16matv = OpVariable %f16matp Private
+
+%main = OpFunction %void None %func
+%main_entry = OpLabel
+
+%m = OpLoad %f16mat %f16matv
+%1 = OpCooperativeMatrixGetCoordinateEXT %uvec3 %m %u32_8
+
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpCooperativeMatrixGetCoordinateEXT Result Type "
+                        "<id>"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("must be OpTypeVector with two 32-bit integer "
+                        "components"));
+}
+
+TEST_F(ValidateMemory, CoopMatMatrixGetCoordinateIndexTypeBad) {
+  const std::string body =
+      R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixGetCoordinateEXT
+OpExtension "SPV_EXT_cooperative_matrix_maintenance1"
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%func = OpTypeFunction %void
+%f16 = OpTypeFloat 16
+%u32 = OpTypeInt 32 0
+%i32 = OpTypeInt 32 1
+%uvec2 = OpTypeVector %u32 2
+
+%f16_0 = OpConstant %f16 0
+%u32_8 = OpConstant %u32 8
+%use_A = OpConstant %u32 0
+%subgroup = OpConstant %u32 3
+
+%f16mat = OpTypeCooperativeMatrixKHR %f16 %subgroup %u32_8 %u32_8 %use_A
+
+%f16matp = OpTypePointer Private %f16mat
+%f16matv = OpVariable %f16matp Private
+
+%main = OpFunction %void None %func
+%main_entry = OpLabel
+
+%m = OpLoad %f16mat %f16matv
+%1 = OpCooperativeMatrixGetCoordinateEXT %uvec2 %m %f16_0
+
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpCooperativeMatrixGetCoordinateEXT Index <id> "
+                        "'8[%half_0x0p_0]' must be OpTypeInt with width 32"));
+}
+
+TEST_F(ValidateMemory, CoopMatMatrixGetCoordinateMatrixTypeBad) {
+  const std::string body =
+      R"(
+OpCapability Shader
+OpCapability CooperativeMatrixGetCoordinateEXT
+OpExtension "SPV_EXT_cooperative_matrix_maintenance1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%func = OpTypeFunction %void
+%u32 = OpTypeInt 32 0
+%uvec2 = OpTypeVector %u32 2
+%u32_8 = OpConstant %u32 8
+%main = OpFunction %void None %func
+%main_entry = OpLabel
+%1 = OpCooperativeMatrixGetCoordinateEXT %uvec2 %u32_8 %u32_8
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(), HasSubstr("Matrix <id>"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("must be OpTypeCooperativeMatrixKHR"));
+}
+
+TEST_F(ValidateMemory, CoopMatMatrixGetCoordinateGood) {
+  const std::string body =
+      R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixGetCoordinateEXT
+OpExtension "SPV_EXT_cooperative_matrix_maintenance1"
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%func = OpTypeFunction %void
+%f16 = OpTypeFloat 16
+%u32 = OpTypeInt 32 0
+%i32 = OpTypeInt 32 1
+%uvec2 = OpTypeVector %u32 2
+
+%u32_8 = OpConstant %u32 8
+%use_A = OpConstant %u32 0
+%subgroup = OpConstant %u32 3
+
+%f16mat = OpTypeCooperativeMatrixKHR %f16 %subgroup %u32_8 %u32_8 %use_A
+
+%f16matp = OpTypePointer Private %f16mat
+%f16matv = OpVariable %f16matp Private
+
+%main = OpFunction %void None %func
+%main_entry = OpLabel
+
+%m = OpLoad %f16mat %f16matv
+%1 = OpCooperativeMatrixGetCoordinateEXT %uvec2 %m %u32_8
+
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
 }
 
 }  // namespace

@@ -13,11 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "source/val/validate.h"
-
 #include "source/opcode.h"
 #include "source/spirv_target_env.h"
 #include "source/val/instruction.h"
+#include "source/val/validate.h"
 #include "source/val/validate_scopes.h"
 #include "source/val/validation_state.h"
 
@@ -113,11 +112,72 @@ spv_result_t ValidateExpect(ValidationState_t& _, const Instruction* inst) {
   return SPV_SUCCESS;
 }
 
+// Could not find other checks using this, maybe shareable in future.
+bool IsConcreteType(const ValidationState_t& _, const Instruction* type_inst) {
+  if (!type_inst) return false;
+
+  switch (type_inst->opcode()) {
+    // scalars
+    case spv::Op::OpTypeInt:
+    case spv::Op::OpTypeFloat:
+      return true;
+
+    // vectors/matrix/arrays - only if they are made of concrete types
+    // example: vector of boolean is not concrete.
+    case spv::Op::OpTypeVector:
+    case spv::Op::OpTypeVectorIdEXT:
+    case spv::Op::OpTypeMatrix:
+    case spv::Op::OpTypeArray:
+    case spv::Op::OpTypeRuntimeArray:
+      return IsConcreteType(_,
+                            _.FindDef(type_inst->GetOperandAs<uint32_t>(1u)));
+
+    case spv::Op::OpTypeStruct:
+      for (uint32_t i = 1; i < type_inst->operands().size(); ++i) {
+        if (!IsConcreteType(_,
+                            _.FindDef(type_inst->GetOperandAs<uint32_t>(i)))) {
+          return false;
+        }
+      }
+      return true;
+
+    case spv::Op::OpTypePointer:
+      return _.addressing_model() == spv::AddressingModel::Physical32 ||
+             _.addressing_model() == spv::AddressingModel::Physical64 ||
+             type_inst->GetOperandAs<spv::StorageClass>(1u) ==
+                 spv::StorageClass::PhysicalStorageBuffer;
+    default:
+      return false;
+  }
+}
+
+spv_result_t ValidateAbort(ValidationState_t& _, const Instruction* inst) {
+  const auto message_type = _.FindDef(inst->GetOperandAs<uint32_t>(0u));
+  const auto source = _.FindDef(inst->GetOperandAs<uint32_t>(1u));
+  const auto source_type = _.FindDef(source->type_id());
+
+  if (!IsConcreteType(_, message_type)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "Message Type operand " << _.getIdName(message_type->id())
+           << " must be a concrete type";
+  }
+
+  if (source_type != message_type &&
+      !_.LogicallyMatch(source_type, message_type, false)) {
+    return _.diag(SPV_ERROR_INVALID_ID, inst)
+           << "Type of Message operand does not logically match the type of "
+              "the Message Type operand";
+  }
+
+  return SPV_SUCCESS;
+}
+
 }  // namespace
 
 spv_result_t MiscPass(ValidationState_t& _, const Instruction* inst) {
   switch (inst->opcode()) {
     case spv::Op::OpUndef:
+    case spv::Op::OpPoisonKHR:
       if (auto error = ValidateUndef(_, inst)) return error;
       break;
     default:
@@ -200,6 +260,11 @@ spv_result_t MiscPass(ValidationState_t& _, const Instruction* inst) {
       break;
     case spv::Op::OpExpectKHR:
       if (auto error = ValidateExpect(_, inst)) {
+        return error;
+      }
+      break;
+    case spv::Op::OpAbortKHR:
+      if (auto error = ValidateAbort(_, inst)) {
         return error;
       }
       break;

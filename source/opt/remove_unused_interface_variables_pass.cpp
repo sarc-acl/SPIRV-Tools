@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "remove_unused_interface_variables_pass.h"
+
 #include "source/spirv_constant.h"
 namespace spvtools {
 namespace opt {
@@ -33,7 +34,9 @@ class RemoveUnusedInterfaceVariablesContext {
         instruction.ForEachInId([&](const uint32_t* id) {
           if (used_variables_.count(*id)) return;
           auto* var = parent_.get_def_use_mgr()->GetDef(*id);
-          if (!var || var->opcode() != spv::Op::OpVariable) return;
+          if (!var || (var->opcode() != spv::Op::OpVariable &&
+                       var->opcode() != spv::Op::OpUntypedVariableKHR))
+            return;
           auto storage_class =
               spv::StorageClass(var->GetSingleWordInOperand(0));
           if (storage_class != spv::StorageClass::Function &&
@@ -55,7 +58,9 @@ class RemoveUnusedInterfaceVariablesContext {
 
   void CollectUsedVariables() {
     std::queue<uint32_t> roots;
-    roots.push(entry_.GetSingleWordInOperand(1));
+    const int op_i =
+        entry_.opcode() == spv::Op::OpConditionalEntryPointINTEL ? 2 : 1;
+    roots.push(entry_.GetSingleWordInOperand(op_i));
     parent_.context()->ProcessCallTreeFromRoots(pfn_, &roots);
   }
 
@@ -73,7 +78,9 @@ class RemoveUnusedInterfaceVariablesContext {
   }
 
   void Modify() {
-    for (int i = entry_.NumInOperands() - 1; i >= 3; --i)
+    const int min_num_operands =
+        entry_.opcode() == spv::Op::OpConditionalEntryPointINTEL ? 4 : 3;
+    for (int i = entry_.NumInOperands() - 1; i >= min_num_operands; --i)
       entry_.RemoveInOperand(i);
     for (auto id : operands_to_add_) {
       entry_.AddOperand(Operand(SPV_OPERAND_TYPE_ID, {id}));

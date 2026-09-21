@@ -510,36 +510,36 @@ OpBranch %24
 %24 = OpLabel
 %35 = OpPhi %8 %10 %23 %34 %26
 %s1 = OpExtInst %6 %ext DebugScope %dbg_main
-%d10 = OpExtInst %6 %ext DebugLine %file_name %uint_1 %uint_1 %uint_0 %uint_0
+%d10 = OpExtInst %6 %ext DebugLine %src %uint_1 %uint_1 %uint_0 %uint_0
 %value0 = OpExtInst %6 %ext DebugValue %dbg_f %35 %null_expr
 OpLoopMerge %25 %26 Unroll
 OpBranch %27
 %27 = OpLabel
 %s2 = OpExtInst %6 %ext DebugScope %dbg_main
-%d1 = OpExtInst %6 %ext DebugLine %file_name %uint_1 %uint_1 %uint_1 %uint_1
+%d1 = OpExtInst %6 %ext DebugLine %src %uint_1 %uint_1 %uint_1 %uint_1
 %29 = OpSLessThan %12 %35 %11
-%d2 = OpExtInst %6 %ext DebugLine %file_name %uint_2 %uint_2 %uint_0 %uint_0
+%d2 = OpExtInst %6 %ext DebugLine %src %uint_2 %uint_2 %uint_0 %uint_0
 OpBranchConditional %29 %30 %25
 %30 = OpLabel
 %s3 = OpExtInst %6 %ext DebugScope %bb
 %decl0 = OpExtInst %6 %ext DebugDeclare %dbg_f %5 %null_expr
 %decl1 = OpExtInst %6 %ext DebugValue %dbg_i %5 %deref_expr
-%d3 = OpExtInst %6 %ext DebugLine %file_name %uint_3 %uint_3 %uint_0 %uint_0
+%d3 = OpExtInst %6 %ext DebugLine %src %uint_3 %uint_3 %uint_0 %uint_0
 %32 = OpAccessChain %19 %5 %35
-%d4 = OpExtInst %6 %ext DebugLine %file_name %uint_4 %uint_4 %uint_0 %uint_0
+%d4 = OpExtInst %6 %ext DebugLine %src %uint_4 %uint_4 %uint_0 %uint_0
 OpStore %32 %18
-%d5 = OpExtInst %6 %ext DebugLine %file_name %uint_5 %uint_5 %uint_0 %uint_0
+%d5 = OpExtInst %6 %ext DebugLine %src %uint_5 %uint_5 %uint_0 %uint_0
 OpBranch %26
 %26 = OpLabel
 %s4 = OpExtInst %6 %ext DebugScope %dbg_main
-%d6 = OpExtInst %6 %ext DebugLine %file_name %uint_6 %uint_6 %uint_0 %uint_0
+%d6 = OpExtInst %6 %ext DebugLine %src %uint_6 %uint_6 %uint_0 %uint_0
 %34 = OpIAdd %8 %35 %20
 %value1 = OpExtInst %6 %ext DebugValue %dbg_f %34 %null_expr
-%d7 = OpExtInst %6 %ext DebugLine %file_name %uint_7 %uint_7 %uint_0 %uint_0
+%d7 = OpExtInst %6 %ext DebugLine %src %uint_7 %uint_7 %uint_0 %uint_0
 OpBranch %24
 %25 = OpLabel
 %s5 = OpExtInst %6 %ext DebugScope %dbg_main
-%d8 = OpExtInst %6 %ext DebugLine %file_name %uint_8 %uint_8 %uint_0 %uint_0
+%d8 = OpExtInst %6 %ext DebugLine %src %uint_8 %uint_8 %uint_0 %uint_0
 OpReturn
 OpFunctionEnd)";
 
@@ -3788,6 +3788,48 @@ TEST_F(PassClassTest, PartialUnrollWithPhiReferencesPhi) {
   SinglePassRunAndMatch<PartialUnrollerTestPass<2>>(text, true);
 }
 
+TEST_F(PassClassTest, UnrollWithDecorationOnPhi) {
+  // With LocalMultiStoreElimPass
+  const std::string text = R"(
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %2 "main"
+               OpExecutionMode %2 LocalSize 16 16 1
+; CHECK-NOT: OpDecorate {{%\w+}} RelaxedPrecision
+               OpDecorate %4 RelaxedPrecision
+      %float = OpTypeFloat 32
+%float_0_000122070312 = OpConstant %float 0.000122070312
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+      %int_1 = OpConstant %int 1
+       %bool = OpTypeBool
+       %void = OpTypeVoid
+         %12 = OpTypeFunction %void
+          %2 = OpFunction %void None %12
+         %13 = OpLabel
+               OpBranch %14
+         %14 = OpLabel
+          %4 = OpPhi %float %float_0_000122070312 %13 %3 %15
+         %16 = OpPhi %int %int_0 %13 %17 %15
+         %18 = OpSLessThan %bool %16 %int_1
+               OpLoopMerge %19 %15 Unroll
+               OpBranchConditional %18 %15 %19
+         %15 = OpLabel
+; CHECK: [[v:%\w+]] = OpExtInst %float
+          %3 = OpExtInst %float %1 NMax %float_0_000122070312 %float_0_000122070312
+         %17 = OpIAdd %int %16 %int_1
+               OpBranch %14
+         %19 = OpLabel
+; CHECK: OpCopyObject %float [[v]]
+         %20 = OpCopyObject %float %4
+               OpReturn
+               OpFunctionEnd
+  )";
+
+  SinglePassRunAndMatch<LoopUnroller>(text, true);
+}
+
 TEST_F(PassClassTest, DontUnrollInfiteLoop) {
   // This is an infinite loop that because the step is 0.  We want to make sure
   // the unroller does not try to unroll it.
@@ -3820,6 +3862,177 @@ OpFunctionEnd
 )";
 
   SinglePassRunAndCheck<LoopUnroller>(text, text, false);
+}
+
+TEST_F(PassClassTest, ApplyDecorationsToClonedInstructions) {
+  const std::string text = R"(
+  ; CHECK: OpDecorate [[ld1:%\w+]] RelaxedPrecision
+  ; CHECK: OpDecorate [[mul1:%\w+]] RelaxedPrecision
+  ; CHECK: OpDecorate [[add1:%\w+]] RelaxedPrecision
+  ; CHECK: OpDecorate [[ld2:%\w+]] RelaxedPrecision
+  ; CHECK: OpDecorate [[mul2:%\w+]] RelaxedPrecision
+  ; CHECK: OpDecorate [[add2:%\w+]] RelaxedPrecision
+  ; CHECK: OpDecorate [[ld3:%\w+]] RelaxedPrecision
+  ; CHECK: OpDecorate [[mul3:%\w+]] RelaxedPrecision
+  ; CHECK: OpDecorate [[add3:%\w+]] RelaxedPrecision
+  
+; CHECK: [[ld1]] = OpLoad %float
+; CHECK: [[mul1]] = OpFMul %float
+; CHECK: [[add1]] = OpFAdd %float
+; CHECK: [[ld2]] = OpLoad %float
+; CHECK: [[mul2]] = OpFMul %float
+; CHECK: [[add2]] = OpFAdd %float
+; CHECK: [[ld3]] = OpLoad %float
+; CHECK: [[mul3]] = OpFMul %float
+; CHECK: [[add3]] = OpFAdd %float
+
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %1 "main" %2
+               OpExecutionMode %1 LocalSize 1 1 1
+               OpDecorate %2 DescriptorSet 0
+               OpDecorate %2 Binding 0
+               OpDecorate %_runtimearr_float ArrayStride 4
+               OpMemberDecorate %_struct_4 0 Offset 0
+               OpDecorate %_struct_4 Block
+               OpDecorate %5 RelaxedPrecision
+               OpDecorate %6 RelaxedPrecision
+               OpDecorate %7 RelaxedPrecision
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+      %int_3 = OpConstant %int 3
+      %int_1 = OpConstant %int 1
+      %float = OpTypeFloat 32
+%_runtimearr_float = OpTypeRuntimeArray %float
+  %_struct_4 = OpTypeStruct %_runtimearr_float
+%_ptr_StorageBuffer__struct_4 = OpTypePointer StorageBuffer %_struct_4
+       %uint = OpTypeInt 32 0
+       %void = OpTypeVoid
+         %16 = OpTypeFunction %void
+       %bool = OpTypeBool
+%_ptr_StorageBuffer_float = OpTypePointer StorageBuffer %float
+          %2 = OpVariable %_ptr_StorageBuffer__struct_4 StorageBuffer
+          %1 = OpFunction %void None %16
+         %19 = OpLabel
+               OpBranch %20
+         %20 = OpLabel
+         %21 = OpPhi %int %int_0 %19 %22 %23
+         %24 = OpSLessThan %bool %21 %int_3
+               OpLoopMerge %25 %23 Unroll
+               OpBranchConditional %24 %26 %25
+         %26 = OpLabel
+         %27 = OpBitcast %uint %21
+         %28 = OpAccessChain %_ptr_StorageBuffer_float %2 %int_0 %27
+          %5 = OpLoad %float %28
+          %6 = OpFMul %float %5 %5
+          %7 = OpFAdd %float %5 %6
+               OpStore %28 %7
+               OpBranch %23
+         %23 = OpLabel
+         %22 = OpIAdd %int %21 %int_1
+               OpBranch %20
+         %25 = OpLabel
+               OpReturn
+               OpFunctionEnd
+)";
+  SetTargetEnv(SPV_ENV_UNIVERSAL_1_6);
+  SinglePassRunAndMatch<LoopUnroller>(text, true);
+}
+
+// When the loop-carried induction phi is itself decorated, unrolling used to
+// transfer that decoration (via ReplaceAllUsesWith) onto the value that
+// replaces the phi, the final iteration's body value which already
+// carries its own cloned decoration. The result was an id decorated
+// RelaxedPrecision twice, which fails validation. The induction phi's
+// decorations must be dropped before the replacement. Running with
+// validation enabled is what catches the regression.
+//
+// The SPIR-V below is the following GLSL compiled with glslang, then run
+// through `--eliminate-local-multi-store --ssa-rewrite`, that is what
+// `-O` hands to the loop unroller:
+//
+//   #version 450
+//   #extension GL_EXT_control_flow_attributes : require
+//   layout(local_size_x = 1) in;
+//   layout(std430, binding = 0) buffer Buf { float data[]; } buf;
+//   void main() {
+//     mediump float acc = 0.0;
+//     [[unroll]] for (uint i = 0u; i < 4u; ++i) {
+//       mediump float x = buf.data[i];  // mediump local
+//       acc += x;                       // mediump + mediump -> mediump
+//     }
+//     buf.data[0] = acc;
+//   }
+//
+// The essential pattern: an unrolled loop whose mediump/min16 accumulator is
+// loop-carried, with an update expression that is also mediump, so both the
+// accumulator phi and the loop-body result end up RelaxedPrecision-decorated.
+TEST_F(PassClassTest, DoNotDuplicateDecorationsOnLoopCarriedValue) {
+  const std::string text = R"(
+; The loop has one RelaxedPrecision-decorated body value and is unrolled
+; four times, so the result must carry exactly four such decorations. A
+; fifth -- the induction phi's decoration leaking onto its replacement --
+; is the regression, and also fails the enabled validation.
+; CHECK: OpDecorate {{%\w+}} RelaxedPrecision
+; CHECK-NEXT: OpDecorate {{%\w+}} RelaxedPrecision
+; CHECK-NEXT: OpDecorate {{%\w+}} RelaxedPrecision
+; CHECK-NEXT: OpDecorate {{%\w+}} RelaxedPrecision
+; CHECK-NOT: RelaxedPrecision
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main"
+               OpExecutionMode %main LocalSize 1 1 1
+               OpDecorate %rt_arr ArrayStride 4
+               OpDecorate %buf_struct Block
+               OpMemberDecorate %buf_struct 0 Offset 0
+               OpDecorate %buf Binding 0
+               OpDecorate %buf DescriptorSet 0
+               OpDecorate %add RelaxedPrecision
+               OpDecorate %acc_phi RelaxedPrecision
+       %void = OpTypeVoid
+    %fn_type = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %float_0 = OpConstant %float 0
+       %uint = OpTypeInt 32 0
+     %uint_0 = OpConstant %uint 0
+     %uint_4 = OpConstant %uint 4
+       %bool = OpTypeBool
+     %rt_arr = OpTypeRuntimeArray %float
+ %buf_struct = OpTypeStruct %rt_arr
+    %buf_ptr = OpTypePointer StorageBuffer %buf_struct
+        %buf = OpVariable %buf_ptr StorageBuffer
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+  %float_ptr = OpTypePointer StorageBuffer %float
+      %int_1 = OpConstant %int 1
+       %main = OpFunction %void None %fn_type
+      %entry = OpLabel
+               OpBranch %header
+     %header = OpLabel
+    %acc_phi = OpPhi %float %float_0 %entry %add %latch
+      %i_phi = OpPhi %uint %uint_0 %entry %i_next %latch
+               OpLoopMerge %merge %latch Unroll
+               OpBranch %cond_blk
+   %cond_blk = OpLabel
+       %cond = OpULessThan %bool %i_phi %uint_4
+               OpBranchConditional %cond %body %merge
+       %body = OpLabel
+     %elem_p = OpAccessChain %float_ptr %buf %int_0 %i_phi
+       %elem = OpLoad %float %elem_p
+        %add = OpFAdd %float %acc_phi %elem
+               OpBranch %latch
+      %latch = OpLabel
+     %i_next = OpIAdd %uint %i_phi %int_1
+               OpBranch %header
+      %merge = OpLabel
+    %store_p = OpAccessChain %float_ptr %buf %int_0 %int_0
+               OpStore %store_p %acc_phi
+               OpReturn
+               OpFunctionEnd
+)";
+  SetTargetEnv(SPV_ENV_UNIVERSAL_1_3);
+  SinglePassRunAndMatch<LoopUnroller>(text, true);
 }
 
 }  // namespace

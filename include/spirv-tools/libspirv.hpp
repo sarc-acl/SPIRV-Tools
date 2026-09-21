@@ -126,6 +126,40 @@ class SPIRV_TOOLS_EXPORT ValidatorOptions {
     spvValidatorOptionsSetAllowLocalSizeId(options_, val);
   }
 
+  // Allow Offset (in addition to ConstOffset) for texture
+  // operations. Was added for VK_KHR_maintenance8
+  void SetAllowOffsetTextureOperand(bool val) {
+    spvValidatorOptionsSetAllowOffsetTextureOperand(options_, val);
+  }
+
+  // Allow base operands of some bit operations to be non-32-bit wide.
+  // Was added for VK_KHR_maintenance9
+  void SetAllowVulkan32BitBitwise(bool val) {
+    spvValidatorOptionsSetAllowVulkan32BitBitwise(options_, val);
+  }
+
+  // Sets custom size and alignment for buffer and acceleration structure
+  // descriptor heap resources.
+  void SetBufferDescriptorLayout(uint32_t size, uint32_t alignment) {
+    spvValidatorOptionsSetBufferDescriptorLayout(options_, size, alignment);
+  }
+
+  // Sets custom size and alignment for image and sampled image descriptor heap
+  // resources.
+  void SetImageDescriptorLayout(uint32_t size, uint32_t alignment) {
+    spvValidatorOptionsSetImageDescriptorLayout(options_, size, alignment);
+  }
+
+  // Sets custom size and alignment for sampler descriptor heap resources.
+  void SetSamplerDescriptorLayout(uint32_t size, uint32_t alignment) {
+    spvValidatorOptionsSetSamplerDescriptorLayout(options_, size, alignment);
+  }
+
+  // Sets custom size and alignment for tensor descriptor heap resources.
+  void SetTensorDescriptorLayout(uint32_t size, uint32_t alignment) {
+    spvValidatorOptionsSetTensorDescriptorLayout(options_, size, alignment);
+  }
+
   // Records whether or not the validator should relax the rules on pointer
   // usage in logical addressing mode.
   //

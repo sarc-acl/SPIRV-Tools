@@ -86,6 +86,7 @@ TEST(TransformationLoadTest, BasicTest) {
   const auto consumer = nullptr;
   const auto context = BuildModule(env, consumer, shader, kFuzzAssembleOption);
   spvtools::ValidatorOptions validator_options;
+  validator_options.SetRelaxLogicalPointer(true);
   ASSERT_TRUE(fuzzerutil::IsValidAndWellFormed(context.get(), validator_options,
                                                kConsoleMessageConsumer));
   TransformationContext transformation_context(
@@ -347,6 +348,13 @@ TEST(TransformationLoadTest, AtomicLoadTestCase) {
   // Bad: id is not fresh.
   ASSERT_FALSE(TransformationLoad(
                    14, 14, true, 15, 20,
+                   MakeInstructionDescriptor(24, spv::Op::OpAccessChain, 0))
+                   .IsApplicable(context.get(), transformation_context));
+
+  // Bad: atomic loads require an integer or floating-point scalar pointee
+  // type; id 11 points to a struct.
+  ASSERT_FALSE(TransformationLoad(
+                   21, 11, true, 15, 20,
                    MakeInstructionDescriptor(24, spv::Op::OpAccessChain, 0))
                    .IsApplicable(context.get(), transformation_context));
 

@@ -30,6 +30,8 @@ namespace {
 constexpr int kSpvFunctionCallFunctionId = 2;
 constexpr int kSpvFunctionCallArgumentId = 3;
 constexpr int kSpvReturnValueId = 0;
+constexpr int kSpvDebugDeclareVarInIdx = 3;
+constexpr int kSpvAccessChainBaseInIdx = 0;
 }  // namespace
 
 uint32_t InlinePass::AddPointerToType(uint32_t type_id,
@@ -166,6 +168,9 @@ bool InlinePass::CloneAndMapLocals(
     }
 
     std::unique_ptr<Instruction> var_inst(callee_var_itr->Clone(context()));
+    if (!var_inst) {
+      return false;
+    }
     uint32_t newId = context()->TakeNextId();
     if (newId == 0) {
       return false;
@@ -248,6 +253,9 @@ bool InlinePass::CloneSameBlockOps(
         // Clone pre-call same-block ops, map result id.
         const Instruction* inInst = mapItr2->second;
         std::unique_ptr<Instruction> sb_inst(inInst->Clone(context()));
+        if (!sb_inst) {
+          return false;
+        }
         if (!CloneSameBlockOps(&sb_inst, postCallSB, preCallSB, block_ptr)) {
           return false;
         }
@@ -351,6 +359,9 @@ bool InlinePass::InlineSingleInstruction(
 
   // Copy callee instruction and remap all input Ids.
   std::unique_ptr<Instruction> cp_inst(inst->Clone(context()));
+  if (!cp_inst) {
+    return false;
+  }
   cp_inst->ForEachInId([&callee2caller](uint32_t* iid) {
     const auto mapItr = callee2caller.find(*iid);
     if (mapItr != callee2caller.end()) {
@@ -422,8 +433,8 @@ bool InlinePass::InlineEntryBlock(
   while (callee_inst_itr != callee_first_block->end()) {
     // Don't inline function definition links, the calling function is not a
     // definition.
-    if (callee_inst_itr->GetShader100DebugOpcode() ==
-        NonSemanticShaderDebugInfo100DebugFunctionDefinition) {
+    if (callee_inst_itr->GetShaderDebugOpcode() ==
+        NonSemanticShaderDebugInfoDebugFunctionDefinition) {
       ++callee_inst_itr;
       continue;
     }
@@ -460,8 +471,8 @@ std::unique_ptr<BasicBlock> InlinePass::InlineBasicBlocks(
          ++inst_itr) {
       // Don't inline function definition links, the calling function is not a
       // definition
-      if (inst_itr->GetShader100DebugOpcode() ==
-          NonSemanticShaderDebugInfo100DebugFunctionDefinition)
+      if (inst_itr->GetShaderDebugOpcode() ==
+          NonSemanticShaderDebugInfoDebugFunctionDefinition)
         continue;
       if (!InlineSingleInstruction(
               callee2caller, new_blk_ptr.get(), &*inst_itr,
@@ -634,25 +645,37 @@ bool InlinePass::GenInlineCode(
     }
   }
 
-  calleeFn->WhileEachInst([&callee2caller, this](const Instruction* cpi) {
-    // Create set of callee result ids. Used to detect forward references
-    const uint32_t rid = cpi->result_id();
-    if (rid != 0 && callee2caller.find(rid) == callee2caller.end()) {
-      const uint32_t nid = context()->TakeNextId();
-      if (nid == 0) return false;
-      callee2caller[rid] = nid;
-    }
-    return true;
-  });
+  if (!calleeFn->WhileEachInst([&callee2caller, this](const Instruction* cpi) {
+        // Create set of callee result ids. Used to detect forward references
+        const uint32_t rid = cpi->result_id();
+        if (rid != 0 && callee2caller.find(rid) == callee2caller.end()) {
+          const uint32_t nid = context()->TakeNextId();
+          if (nid == 0) return false;
+          callee2caller[rid] = nid;
+        }
+        return true;
+      })) {
+    return false;
+  }
 
   // Inline DebugClare instructions in the callee's header.
+  bool header_dbg_failed = false;
   calleeFn->ForEachDebugInstructionsInHeader(
-      [&new_blk_ptr, &callee2caller, &inlined_at_ctx, this](Instruction* inst) {
-        InlineSingleInstruction(
-            callee2caller, new_blk_ptr.get(), inst,
-            context()->get_debug_info_mgr()->BuildDebugInlinedAtChain(
-                inst->GetDebugScope().GetInlinedAt(), &inlined_at_ctx));
+      [&new_blk_ptr, &callee2caller, &inlined_at_ctx, &header_dbg_failed,
+       this](Instruction* inst) {
+        if (header_dbg_failed) {
+          return;
+        }
+        if (!InlineSingleInstruction(
+                callee2caller, new_blk_ptr.get(), inst,
+                context()->get_debug_info_mgr()->BuildDebugInlinedAtChain(
+                    inst->GetDebugScope().GetInlinedAt(), &inlined_at_ctx))) {
+          header_dbg_failed = true;
+        }
       });
+  if (header_dbg_failed) {
+    return false;
+  }
 
   // Inline the entry block of the callee function.
   if (!InlineEntryBlock(callee2caller, &new_blk_ptr, calleeFn->begin(),
@@ -857,6 +880,93 @@ void InlinePass::InitializeInline() {
 }
 
 InlinePass::InlinePass() {}
+
+void InlinePass::FixDebugDeclares(Function* func) {
+  std::map<uint32_t, Instruction*> access_chains;
+  std::vector<Instruction*> debug_declare_insts;
+
+  func->ForEachInst([&access_chains, &debug_declare_insts](Instruction* inst) {
+    if (inst->opcode() == spv::Op::OpAccessChain) {
+      access_chains[inst->result_id()] = inst;
+    }
+    if (inst->GetCommonDebugOpcode() == CommonDebugInfoDebugDeclare) {
+      debug_declare_insts.push_back(inst);
+    }
+  });
+
+  for (auto& inst : debug_declare_insts) {
+    FixDebugDeclare(inst, access_chains);
+  }
+}
+
+void InlinePass::FixDebugDeclare(
+    Instruction* dbg_declare_inst,
+    const std::map<uint32_t, Instruction*>& access_chains) {
+  do {
+    uint32_t var_id =
+        dbg_declare_inst->GetSingleWordInOperand(kSpvDebugDeclareVarInIdx);
+
+    // The def-use chains are not kept up to date while inlining, so we need to
+    // get the variable by traversing the functions.
+    auto it = access_chains.find(var_id);
+    if (it == access_chains.end()) {
+      return;
+    }
+    Instruction* access_chain = it->second;
+
+    // If the variable id in the debug declare is an access chain, it is
+    // invalid. it needs to be fixed up. The debug declare will be updated so
+    // that its Var operand becomes the base of the access chain. The indexes of
+    // the access chain are prepended before the indexes of the debug declare.
+
+    // DebugDeclare Indexes must be constant integers. If any access chain
+    // index is non-constant (e.g. the result of an OpLoad), we cannot
+    // produce a valid DebugDeclare. Kill it rather than emit invalid SPIR-V.
+    bool has_non_constant_index = false;
+    for (uint32_t i = kSpvAccessChainBaseInIdx + 1;
+         i < access_chain->NumInOperands(); ++i) {
+      uint32_t idx_id = access_chain->GetSingleWordInOperand(i);
+      bool found_constant = false;
+      for (auto& inst : context()->module()->types_values()) {
+        if (inst.result_id() == idx_id) {
+          found_constant = spvOpcodeIsConstant(inst.opcode());
+          break;
+        }
+      }
+      if (!found_constant) {
+        has_non_constant_index = true;
+        break;
+      }
+    }
+    if (has_non_constant_index) {
+      context()->KillInst(dbg_declare_inst);
+      return;
+    }
+
+    std::vector<Operand> operands;
+    for (int i = 0; i < kSpvDebugDeclareVarInIdx; i++) {
+      operands.push_back(dbg_declare_inst->GetInOperand(i));
+    }
+
+    uint32_t access_chain_base =
+        access_chain->GetSingleWordInOperand(kSpvAccessChainBaseInIdx);
+    operands.push_back(Operand(SPV_OPERAND_TYPE_ID, {access_chain_base}));
+    operands.push_back(
+        dbg_declare_inst->GetInOperand(kSpvDebugDeclareVarInIdx + 1));
+
+    for (uint32_t i = kSpvAccessChainBaseInIdx + 1;
+         i < access_chain->NumInOperands(); ++i) {
+      operands.push_back(access_chain->GetInOperand(i));
+    }
+
+    for (uint32_t i = kSpvDebugDeclareVarInIdx + 2;
+         i < dbg_declare_inst->NumInOperands(); ++i) {
+      operands.push_back(dbg_declare_inst->GetInOperand(i));
+    }
+
+    dbg_declare_inst->SetInOperands(std::move(operands));
+  } while (true);
+}
 
 }  // namespace opt
 }  // namespace spvtools

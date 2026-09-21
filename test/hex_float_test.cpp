@@ -30,6 +30,7 @@ namespace spvtools {
 namespace utils {
 namespace {
 
+using spvtools::utils::LeadingSign;
 using ::testing::Eq;
 
 // In this file "encode" means converting a number into a string,
@@ -582,6 +583,15 @@ int32_t unbiased_exponent(double f) {
 int16_t unbiased_half_exponent(uint16_t f) {
   return HexFloat<FloatProxy<Float16>>(f).getUnbiasedNormalizedExponent();
 }
+int16_t unbiased_bfloat16_exponent(uint16_t f) {
+  return HexFloat<FloatProxy<BFloat16>>(f).getUnbiasedNormalizedExponent();
+}
+int8_t unbiased_E4M3_exponent(uint8_t f) {
+  return HexFloat<FloatProxy<Float8_E4M3>>(f).getUnbiasedNormalizedExponent();
+}
+int8_t unbiased_E5M2_exponent(uint8_t f) {
+  return HexFloat<FloatProxy<Float8_E5M2>>(f).getUnbiasedNormalizedExponent();
+}
 
 TEST(HexFloatOperationTest, UnbiasedExponent) {
   // Float cases
@@ -616,6 +626,42 @@ TEST(HexFloatOperationTest, UnbiasedExponent) {
 
   // Smallest representable number
   EXPECT_EQ(-24, unbiased_half_exponent(0x0001));
+
+  EXPECT_EQ(0, unbiased_bfloat16_exponent(0x3F80));
+  EXPECT_EQ(3, unbiased_bfloat16_exponent(0x4100));
+  EXPECT_EQ(-1, unbiased_bfloat16_exponent(0x3F00));
+  EXPECT_EQ(-126, unbiased_bfloat16_exponent(0x0080));
+  EXPECT_EQ(127, unbiased_bfloat16_exponent(0x7F00));
+  EXPECT_EQ(10, unbiased_bfloat16_exponent(0x4480));
+  EXPECT_EQ(128, unbiased_bfloat16_exponent(0x7F80));
+  // Test case for the smallest representable denormal number.
+  // Effective exponent is 1 - bias - (leading_one_pos) = 1 - 127 - 7 = -133
+  EXPECT_EQ(-133, unbiased_bfloat16_exponent(0x0001));
+
+  // E4M3 cases
+  // The exponent is represented in the bits 0x78
+  // The offset is -7
+  EXPECT_EQ(0, unbiased_E4M3_exponent(0x38));
+  EXPECT_EQ(3, unbiased_E4M3_exponent(0x50));
+  EXPECT_EQ(-1, unbiased_E4M3_exponent(0x30));
+  EXPECT_EQ(-6, unbiased_E4M3_exponent(0x08));
+  EXPECT_EQ(8, unbiased_E4M3_exponent(0x78));
+
+  // Smallest representable number
+  EXPECT_EQ(-9, unbiased_E4M3_exponent(0x01));
+
+  // E5M2 cases
+  // The exponent is represented in the bits 0x7C
+  // The offset is -15
+  EXPECT_EQ(0, unbiased_E5M2_exponent(0x3C));
+  EXPECT_EQ(3, unbiased_E5M2_exponent(0x48));
+  EXPECT_EQ(-1, unbiased_E5M2_exponent(0x38));
+  EXPECT_EQ(-14, unbiased_E5M2_exponent(0x04));
+  EXPECT_EQ(16, unbiased_E5M2_exponent(0x7C));
+  EXPECT_EQ(10, unbiased_E5M2_exponent(0x64));
+
+  // Smallest representable number
+  EXPECT_EQ(-16, unbiased_E5M2_exponent(0x01));
 }
 
 // Creates a float that is the sum of 1/(2 ^ fractions[i]) for i in factions
@@ -730,6 +776,14 @@ TEST(HexFloatOperationTests,
             set_from_sign(true, -128, bits_set({0, 1, 4}), false));
 }
 
+template <typename other_T, typename T>
+typename other_T::uint_type getRoundedNormalizedSignificandIgnoreResult(
+    HexFloat<T> hf, round_direction dir, bool* carry_bit) {
+  typename other_T::uint_type significand = 0;
+  hf.template getRoundedNormalizedSignificand<other_T>(dir, &significand,
+                                                       carry_bit);
+  return significand;
+}
 TEST(HexFloatOperationTests, NonRounding) {
   // Rounding from 32-bit hex-float to 32-bit hex-float should be trivial,
   // except in the denorm case which is a bit more complex.
@@ -743,29 +797,31 @@ TEST(HexFloatOperationTests, NonRounding) {
 
   // Everything fits, so this should be straight-forward
   for (round_direction round : rounding) {
-    EXPECT_EQ(bits_set({}),
-              HF(0.f).getRoundedNormalizedSignificand<HF>(round, &carry_bit));
+    EXPECT_EQ(bits_set({}), getRoundedNormalizedSignificandIgnoreResult<HF>(
+                                HF(0.f), round, &carry_bit));
     EXPECT_FALSE(carry_bit);
 
     EXPECT_EQ(bits_set({0}),
-              HF(float_fractions({0, 1}))
-                  .getRoundedNormalizedSignificand<HF>(round, &carry_bit));
+              getRoundedNormalizedSignificandIgnoreResult<HF>(
+                  HF(float_fractions({0, 1})), round, &carry_bit));
     EXPECT_FALSE(carry_bit);
 
     EXPECT_EQ(bits_set({1, 3}),
-              HF(float_fractions({0, 2, 4}))
-                  .getRoundedNormalizedSignificand<HF>(round, &carry_bit));
+              getRoundedNormalizedSignificandIgnoreResult<HF>(
+                  HF(float_fractions({0, 2, 4})), round, &carry_bit));
     EXPECT_FALSE(carry_bit);
 
     EXPECT_EQ(
         bits_set({0, 1, 4}),
-        HF(static_cast<float>(-ldexp(float_fractions({0, 1, 2, 5}), -128)))
-            .getRoundedNormalizedSignificand<HF>(round, &carry_bit));
+        getRoundedNormalizedSignificandIgnoreResult<HF>(
+            HF(static_cast<float>(-ldexp(float_fractions({0, 1, 2, 5}), -128))),
+            round, &carry_bit));
     EXPECT_FALSE(carry_bit);
 
     EXPECT_EQ(bits_set({0, 1, 4, 22}),
-              HF(static_cast<float>(float_fractions({0, 1, 2, 5, 23})))
-                  .getRoundedNormalizedSignificand<HF>(round, &carry_bit));
+              getRoundedNormalizedSignificandIgnoreResult<HF>(
+                  HF(static_cast<float>(float_fractions({0, 1, 2, 5, 23}))),
+                  round, &carry_bit));
     EXPECT_FALSE(carry_bit);
   }
 }
@@ -786,8 +842,8 @@ TEST_P(HexFloatRoundTest, RoundDownToFP16) {
   HF input_value(GetParam().source_float);
   bool carry_bit = false;
   EXPECT_EQ(GetParam().expected_results.first,
-            input_value.getRoundedNormalizedSignificand<HF16>(GetParam().round,
-                                                              &carry_bit));
+            getRoundedNormalizedSignificandIgnoreResult<HF16>(
+                input_value, GetParam().round, &carry_bit));
   EXPECT_EQ(carry_bit, GetParam().expected_results.second);
 }
 
@@ -839,6 +895,166 @@ INSTANTIATE_TEST_SUITE_P(F32ToF16, HexFloatRoundTest,
     {static_cast<float>(ldexp(float_fractions({0, 1, 11, 13}), -131)), std::make_pair(half_bits_set({0}), false), RD::kToNegativeInfinity},
     {static_cast<float>(ldexp(float_fractions({0, 1, 11, 13}), -130)), std::make_pair(half_bits_set({0, 9}), false), RD::kToNearestEven},
   })));
+
+// clang-format on
+
+// The same as bits_set but for a E4M3 value instead of 32-bit floating
+// point.
+uint8_t e4m3_bits_set(const std::vector<uint32_t>& bits) {
+  const uint32_t top_bit = 1u << 2u;
+  uint32_t val = 0;
+  for (uint32_t i : bits) {
+    val |= top_bit >> i;
+  }
+  return static_cast<uint8_t>(val);
+}
+
+struct RoundSignificandCaseE4M3 {
+  float source_float;
+  std::pair<int8_t, bool> expected_results;
+  round_direction round;
+};
+
+using HexFloatRoundTestE4M3 =
+    ::testing::TestWithParam<RoundSignificandCaseE4M3>;
+
+TEST_P(HexFloatRoundTestE4M3, RoundDownToFPE4M3) {
+  using HF = HexFloat<FloatProxy<float>>;
+  using HFE4M3 = HexFloat<FloatProxy<Float8_E4M3>>;
+
+  HF input_value(GetParam().source_float);
+  bool carry_bit = false;
+  EXPECT_EQ(GetParam().expected_results.first,
+            getRoundedNormalizedSignificandIgnoreResult<HFE4M3>(
+                input_value, GetParam().round, &carry_bit));
+  EXPECT_EQ(carry_bit, GetParam().expected_results.second);
+}
+
+// clang-format off
+INSTANTIATE_TEST_SUITE_P(F32ToE4M3, HexFloatRoundTestE4M3,
+  ::testing::ValuesIn(std::vector<RoundSignificandCaseE4M3>(
+  {
+    {float_fractions({0}), std::make_pair(e4m3_bits_set({}), false), RD::kToZero},
+    {float_fractions({0}), std::make_pair(e4m3_bits_set({}), false), RD::kToNearestEven},
+    {float_fractions({0}), std::make_pair(e4m3_bits_set({}), false), RD::kToPositiveInfinity},
+    {float_fractions({0}), std::make_pair(e4m3_bits_set({}), false), RD::kToNegativeInfinity},
+    {float_fractions({0, 1}), std::make_pair(e4m3_bits_set({0}), false), RD::kToZero},
+
+    {float_fractions({0, 1, 4}), std::make_pair(e4m3_bits_set({0}), false), RD::kToZero},
+    {float_fractions({0, 1, 4}), std::make_pair(e4m3_bits_set({0, 2}), false), RD::kToPositiveInfinity},
+    {float_fractions({0, 1, 4}), std::make_pair(e4m3_bits_set({0}), false), RD::kToNegativeInfinity},
+    {float_fractions({0, 1, 4}), std::make_pair(e4m3_bits_set({0}), false), RD::kToNearestEven},
+
+    {float_fractions({0, 1, 3, 4}), std::make_pair(e4m3_bits_set({0, 2}), false), RD::kToZero},
+    {float_fractions({0, 1, 3, 4}), std::make_pair(e4m3_bits_set({0, 1}), false), RD::kToPositiveInfinity},
+    {float_fractions({0, 1, 3, 4}), std::make_pair(e4m3_bits_set({0, 2}), false), RD::kToNegativeInfinity},
+    {float_fractions({0, 1, 3, 4}), std::make_pair(e4m3_bits_set({0, 1}), false), RD::kToNearestEven},
+
+    {float_fractions({0, 1, 4, 5}), std::make_pair(e4m3_bits_set({0}), false), RD::kToZero},
+    {float_fractions({0, 1, 4, 5}), std::make_pair(e4m3_bits_set({0, 2}), false), RD::kToPositiveInfinity},
+    {float_fractions({0, 1, 4, 5}), std::make_pair(e4m3_bits_set({0}), false), RD::kToNegativeInfinity},
+    {float_fractions({0, 1, 4, 5}), std::make_pair(e4m3_bits_set({0, 2}), false), RD::kToNearestEven},
+
+    {-float_fractions({0, 1, 4, 5}), std::make_pair(e4m3_bits_set({0}), false), RD::kToZero},
+    {-float_fractions({0, 1, 4, 5}), std::make_pair(e4m3_bits_set({0}), false), RD::kToPositiveInfinity},
+    {-float_fractions({0, 1, 4, 5}), std::make_pair(e4m3_bits_set({0, 2}), false), RD::kToNegativeInfinity},
+    {-float_fractions({0, 1, 4, 5}), std::make_pair(e4m3_bits_set({0, 2}), false), RD::kToNearestEven},
+
+    {float_fractions({0, 1, 4, 22}), std::make_pair(e4m3_bits_set({0}), false), RD::kToZero},
+    {float_fractions({0, 1, 4, 22}), std::make_pair(e4m3_bits_set({0, 2}), false), RD::kToPositiveInfinity},
+    {float_fractions({0, 1, 4, 22}), std::make_pair(e4m3_bits_set({0}), false), RD::kToNegativeInfinity},
+    {float_fractions({0, 1, 4, 22}), std::make_pair(e4m3_bits_set({0, 2}), false), RD::kToNearestEven},
+
+    // Carries
+    {float_fractions({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}), std::make_pair(e4m3_bits_set({0, 1, 2}), false), RD::kToZero},
+    {float_fractions({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}), std::make_pair(e4m3_bits_set({}), true), RD::kToPositiveInfinity},
+    {float_fractions({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}), std::make_pair(e4m3_bits_set({0, 1, 2}), false), RD::kToNegativeInfinity},
+    {float_fractions({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}), std::make_pair(e4m3_bits_set({}), true), RD::kToNearestEven},
+
+    // Cases where original number was denorm. Note: this should have no effect
+    // the number is pre-normalized.
+    {static_cast<float>(ldexp(float_fractions({0, 1, 4, 6}), -128)), std::make_pair(e4m3_bits_set({0}), false), RD::kToZero},
+    {static_cast<float>(ldexp(float_fractions({0, 1, 4, 6}), -129)), std::make_pair(e4m3_bits_set({0, 2}), false), RD::kToPositiveInfinity},
+    {static_cast<float>(ldexp(float_fractions({0, 1, 4, 6}), -131)), std::make_pair(e4m3_bits_set({0}), false), RD::kToNegativeInfinity},
+    {static_cast<float>(ldexp(float_fractions({0, 1, 4, 6}), -130)), std::make_pair(e4m3_bits_set({0, 2}), false), RD::kToNearestEven},
+  })));
+
+// clang-format on
+// The same as bits_set but for a E4M3 value instead of 32-bit floating
+// point.
+uint8_t e5m2_bits_set(const std::vector<uint32_t>& bits) {
+  const uint32_t top_bit = 1u << 1u;
+  uint32_t val = 0;
+  for (uint32_t i : bits) {
+    val |= top_bit >> i;
+  }
+  return static_cast<uint8_t>(val);
+}
+
+struct RoundSignificandCaseE5M2 {
+  float source_float;
+  std::pair<int8_t, bool> expected_results;
+  round_direction round;
+};
+
+using HexFloatRoundTestE5M2 =
+    ::testing::TestWithParam<RoundSignificandCaseE5M2>;
+
+TEST_P(HexFloatRoundTestE5M2, RoundDownToFPE4M3) {
+  using HF = HexFloat<FloatProxy<float>>;
+  using HFE5M2 = HexFloat<FloatProxy<Float8_E5M2>>;
+
+  HF input_value(GetParam().source_float);
+  bool carry_bit = false;
+  EXPECT_EQ(GetParam().expected_results.first,
+            getRoundedNormalizedSignificandIgnoreResult<HFE5M2>(
+                input_value, GetParam().round, &carry_bit));
+  EXPECT_EQ(carry_bit, GetParam().expected_results.second);
+}
+
+// clang-format off
+INSTANTIATE_TEST_SUITE_P(F32ToE5M2, HexFloatRoundTestE5M2,
+  ::testing::ValuesIn(std::vector<RoundSignificandCaseE5M2>(
+  {
+    {float_fractions({0}), std::make_pair(e5m2_bits_set({}), false), RD::kToZero},
+    {float_fractions({0}), std::make_pair(e5m2_bits_set({}), false), RD::kToNearestEven},
+    {float_fractions({0}), std::make_pair(e5m2_bits_set({}), false), RD::kToPositiveInfinity},
+    {float_fractions({0}), std::make_pair(e5m2_bits_set({}), false), RD::kToNegativeInfinity},
+    {float_fractions({0, 1}), std::make_pair(e5m2_bits_set({0}), false), RD::kToZero},
+
+    {float_fractions({0, 1, 4}), std::make_pair(e5m2_bits_set({0}), false), RD::kToZero},
+    {float_fractions({0, 1, 4}), std::make_pair(e5m2_bits_set({0, 1}), false), RD::kToPositiveInfinity},
+    {float_fractions({0, 1, 4}), std::make_pair(e5m2_bits_set({0}), false), RD::kToNegativeInfinity},
+    {float_fractions({0, 1, 4}), std::make_pair(e5m2_bits_set({0}), false), RD::kToNearestEven},
+
+    {float_fractions({0, 3, 4}), std::make_pair(e5m2_bits_set({}), false), RD::kToZero},
+    {float_fractions({0, 3, 4}), std::make_pair(e5m2_bits_set({1}), false), RD::kToPositiveInfinity},
+    {float_fractions({0, 3, 4}), std::make_pair(e5m2_bits_set({}), false), RD::kToNegativeInfinity},
+    {float_fractions({0, 3, 4}), std::make_pair(e5m2_bits_set({1}), false), RD::kToNearestEven},
+
+    {float_fractions({0, 2, 3}), std::make_pair(e5m2_bits_set({1}), false), RD::kToZero},
+    {float_fractions({0, 2, 3}), std::make_pair(e5m2_bits_set({0}), false), RD::kToPositiveInfinity},
+    {float_fractions({0, 2, 3}), std::make_pair(e5m2_bits_set({1}), false), RD::kToNegativeInfinity},
+    {float_fractions({0, 2, 3}), std::make_pair(e5m2_bits_set({0}), false), RD::kToNearestEven},
+
+    {-float_fractions({0, 2, 3}), std::make_pair(e5m2_bits_set({1}), false), RD::kToZero},
+    {-float_fractions({0, 2, 3}), std::make_pair(e5m2_bits_set({1}), false), RD::kToPositiveInfinity},
+    {-float_fractions({0, 2, 3}), std::make_pair(e5m2_bits_set({0}), false), RD::kToNegativeInfinity},
+    {-float_fractions({0, 2, 3}), std::make_pair(e5m2_bits_set({0}), false), RD::kToNearestEven},
+
+    // Carries
+    {float_fractions({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}), std::make_pair(e5m2_bits_set({0, 1}), false), RD::kToZero},
+    {float_fractions({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}), std::make_pair(e5m2_bits_set({}), true), RD::kToPositiveInfinity},
+    {float_fractions({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}), std::make_pair(e5m2_bits_set({0, 1}), false), RD::kToNegativeInfinity},
+    {float_fractions({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}), std::make_pair(e5m2_bits_set({}), true), RD::kToNearestEven},
+
+    // Cases where original number was denorm. Note: this should have no effect
+    // the number is pre-normalized.
+    {static_cast<float>(ldexp(float_fractions({0, 3, 6}), -128)), std::make_pair(e5m2_bits_set({}), false), RD::kToZero},
+    {static_cast<float>(ldexp(float_fractions({0, 3, 6}), -129)), std::make_pair(e5m2_bits_set({1}), false), RD::kToPositiveInfinity},
+    {static_cast<float>(ldexp(float_fractions({0, 3, 6}), -131)), std::make_pair(e5m2_bits_set({}), false), RD::kToNegativeInfinity},
+    {static_cast<float>(ldexp(float_fractions({0, 3, 6}), -130)), std::make_pair(e5m2_bits_set({1}), false), RD::kToNearestEven},
+  })));
 // clang-format on
 
 struct UpCastSignificandCase {
@@ -862,11 +1078,12 @@ TEST_P(HexFloatRoundUpSignificandTest, Widening) {
   for (round_direction round : rounding) {
     carry_bit = false;
     HF16 input_value(GetParam().source_half);
-    EXPECT_EQ(
-        GetParam().expected_result,
-        input_value.getRoundedNormalizedSignificand<HF>(round, &carry_bit))
+    EXPECT_EQ(GetParam().expected_result,
+              getRoundedNormalizedSignificandIgnoreResult<HF>(
+                  input_value, round, &carry_bit))
         << std::hex << "0x"
-        << input_value.getRoundedNormalizedSignificand<HF>(round, &carry_bit)
+        << getRoundedNormalizedSignificandIgnoreResult<HF>(input_value, round,
+                                                           &carry_bit)
         << "  0x" << GetParam().expected_result;
     EXPECT_FALSE(carry_bit);
   }
@@ -1016,6 +1233,225 @@ INSTANTIATE_TEST_SUITE_P(
         // Nans are below because we cannot test for equality.
     })));
 
+using HexFloatFP32ToE4M3Tests = ::testing::TestWithParam<DownCastTest>;
+
+TEST_P(HexFloatFP32ToE4M3Tests, NarrowingCasts) {
+  using HF = HexFloat<FloatProxy<float>>;
+  using HFE4M3 = HexFloat<FloatProxy<Float8_E4M3>>;
+  HF f(GetParam().source_float);
+  for (auto round : GetParam().directions) {
+    HFE4M3 e4m3(0);
+    f.castTo(e4m3, round);
+    EXPECT_EQ(GetParam().expected_half, e4m3.value().getAsFloat().get_value())
+        << get_round_text(round) << "  " << std::hex
+        << BitwiseCast<uint32_t>(GetParam().source_float)
+        << " cast to: " << (uint32_t)e4m3.value().getAsFloat().get_value();
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    F32ToE4M3, HexFloatFP32ToE4M3Tests,
+    ::testing::ValuesIn(std::vector<DownCastTest>({
+        // Exactly representable as half.
+        {0.f,
+         0x0,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {-0.f,
+         0x80,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {1.0f,
+         0x38,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {-1.0f,
+         0xB8,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+
+        {float_fractions({0, 1, 3}),
+         0x3D,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {-float_fractions({0, 1, 3}),
+         0xBD,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(ldexp(float_fractions({0, 1, 3}), 3)),
+         0x55,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(-ldexp(float_fractions({0, 1, 3}), 3)),
+         0xD5,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+
+        // Underflow
+        {static_cast<float>(ldexp(1.0f, -10)),
+         0x0,
+         {RD::kToZero, RD::kToNegativeInfinity, RD::kToNearestEven}},
+        {static_cast<float>(ldexp(1.0f, -10)), 0x1, {RD::kToPositiveInfinity}},
+        {static_cast<float>(-ldexp(1.0f, -10)),
+         0x80,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNearestEven}},
+        {static_cast<float>(-ldexp(1.0f, -9)), 0x81, {RD::kToNegativeInfinity}},
+        {static_cast<float>(ldexp(1.0f, -9)),
+         0x1,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+
+        // Overflow
+        {static_cast<float>(ldexp(1.0f, 9)),
+         Float8_E4M3::max().get_value(),
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(ldexp(1.0f, 10)),
+         Float8_E4M3::max().get_value(),
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(ldexp(1.3f, 9)),
+         Float8_E4M3::max().get_value(),
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(-ldexp(1.0f, 9)),
+         static_cast<uint16_t>(0x80 | Float8_E4M3::max().get_value()),
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(-ldexp(1.0f, 10)),
+         static_cast<uint16_t>(0x80 | Float8_E4M3::max().get_value()),
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(-ldexp(1.3f, 9)),
+         static_cast<uint16_t>(0x80 | Float8_E4M3::max().get_value()),
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+
+        // Transfer of Infinities
+        {std::numeric_limits<float>::infinity(),
+         Float8_E4M3::max().get_value(),
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {-std::numeric_limits<float>::infinity(),
+         static_cast<uint16_t>(0x80 | Float8_E4M3::max().get_value()),
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+
+        // Nans are below because we cannot test for equality.
+    })));
+
+using HexFloatFP32ToE5M2Tests = ::testing::TestWithParam<DownCastTest>;
+
+TEST_P(HexFloatFP32ToE5M2Tests, NarrowingCasts) {
+  using HF = HexFloat<FloatProxy<float>>;
+  using HFE5M2 = HexFloat<FloatProxy<Float8_E5M2>>;
+  HF f(GetParam().source_float);
+  for (auto round : GetParam().directions) {
+    HFE5M2 e5m2(0);
+    f.castTo(e5m2, round);
+    EXPECT_EQ(GetParam().expected_half, e5m2.value().getAsFloat().get_value())
+        << get_round_text(round) << "  " << std::hex
+        << BitwiseCast<uint32_t>(GetParam().source_float)
+        << " cast to: " << (uint32_t)e5m2.value().getAsFloat().get_value();
+  }
+}
+
+const uint8_t e5m2_positive_infinity = 0x7C;
+const uint8_t e5m2_negative_infinity = 0xFC;
+
+INSTANTIATE_TEST_SUITE_P(
+    F32ToE5M2, HexFloatFP32ToE5M2Tests,
+    ::testing::ValuesIn(std::vector<DownCastTest>({
+        // Exactly representable as half.
+        {0.f,
+         0x0,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {-0.f,
+         0x80,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {1.0f,
+         0x3C,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {-1.0f,
+         0xBC,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+
+        {float_fractions({0, 1, 2}),
+         0x3F,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {-float_fractions({0, 1, 2}),
+         0xBF,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(ldexp(float_fractions({0, 2}), 3)),
+         0x49,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(-ldexp(float_fractions({0, 2}), 3)),
+         0xC9,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+
+        // Underflow
+        {static_cast<float>(ldexp(1.0f, -17)),
+         0x0,
+         {RD::kToZero, RD::kToNegativeInfinity, RD::kToNearestEven}},
+        {static_cast<float>(ldexp(1.0f, -17)), 0x1, {RD::kToPositiveInfinity}},
+        {static_cast<float>(-ldexp(1.0f, -17)),
+         0x80,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNearestEven}},
+        {static_cast<float>(-ldexp(1.0f, -16)),
+         0x81,
+         {RD::kToNegativeInfinity}},
+        {static_cast<float>(ldexp(1.0f, -16)),
+         0x1,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+
+        // Overflow
+        {static_cast<float>(ldexp(1.0f, 16)),
+         e5m2_positive_infinity,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(ldexp(1.0f, 17)),
+         e5m2_positive_infinity,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(ldexp(1.3f, 16)),
+         e5m2_positive_infinity,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(-ldexp(1.0f, 16)),
+         e5m2_negative_infinity,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(-ldexp(1.0f, 17)),
+         e5m2_negative_infinity,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {static_cast<float>(-ldexp(1.3f, 16)),
+         e5m2_negative_infinity,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+
+        // Transfer of Infinities
+        {std::numeric_limits<float>::infinity(),
+         e5m2_positive_infinity,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+        {-std::numeric_limits<float>::infinity(),
+         e5m2_negative_infinity,
+         {RD::kToZero, RD::kToPositiveInfinity, RD::kToNegativeInfinity,
+          RD::kToNearestEven}},
+
+        // Nans are below because we cannot test for equality.
+    })));
+
 struct UpCastCase {
   uint16_t source_half;
   float expected_float;
@@ -1069,6 +1505,9 @@ INSTANTIATE_TEST_SUITE_P(
 TEST(HexFloatOperationTests, NanTests) {
   using HF = HexFloat<FloatProxy<float>>;
   using HF16 = HexFloat<FloatProxy<Float16>>;
+  using BF16 = HexFloat<FloatProxy<BFloat16>>;
+  using FE4M3 = HexFloat<FloatProxy<Float8_E4M3>>;
+  using FE5M2 = HexFloat<FloatProxy<Float8_E5M2>>;
   round_direction rounding[] = {round_direction::kToZero,
                                 round_direction::kToNearestEven,
                                 round_direction::kToPositiveInfinity,
@@ -1078,6 +1517,9 @@ TEST(HexFloatOperationTests, NanTests) {
   for (round_direction round : rounding) {
     HF16 f16(0);
     HF f(0.f);
+    BF16 bf16(0);
+    FE4M3 fe4m3(0);
+    FE5M2 fe5m2(0);
     HF(std::numeric_limits<float>::quiet_NaN()).castTo(f16, round);
     EXPECT_TRUE(f16.value().isNan());
     HF(std::numeric_limits<float>::signaling_NaN()).castTo(f16, round);
@@ -1093,6 +1535,45 @@ TEST(HexFloatOperationTests, NanTests) {
     EXPECT_TRUE(f.value().isNan());
     HF16(0xFF00).castTo(f, round);
     EXPECT_TRUE(f.value().isNan());
+
+    BF16(0x7F81).castTo(f, round);
+    EXPECT_TRUE(f.value().isNan());
+    BF16(0x7F91).castTo(f, round);
+    EXPECT_TRUE(f.value().isNan());
+    BF16(0xFF81).castTo(f, round);
+    EXPECT_TRUE(f.value().isNan());
+    BF16(0x7F90).castTo(f, round);
+    EXPECT_TRUE(f.value().isNan());
+    BF16(0xFFE0).castTo(f, round);
+    EXPECT_TRUE(f.value().isNan());
+
+    HF(std::numeric_limits<float>::quiet_NaN()).castTo(fe4m3, round);
+    EXPECT_TRUE(fe4m3.value().isNan());
+    HF(std::numeric_limits<float>::signaling_NaN()).castTo(fe4m3, round);
+    EXPECT_TRUE(fe4m3.value().isNan());
+
+    FE4M3(0x7F).castTo(f, round);
+    EXPECT_TRUE(f.value().isNan());
+    FE4M3(0xFF).castTo(f, round);
+    EXPECT_TRUE(f.value().isNan());
+
+    HF(std::numeric_limits<float>::quiet_NaN()).castTo(fe5m2, round);
+    EXPECT_TRUE(fe5m2.value().isNan());
+    HF(std::numeric_limits<float>::signaling_NaN()).castTo(fe5m2, round);
+    EXPECT_TRUE(fe5m2.value().isNan());
+
+    FE5M2(0x7D).castTo(f, round);
+    EXPECT_TRUE(f.value().isNan());
+    FE5M2(0x7E).castTo(f, round);
+    EXPECT_TRUE(f.value().isNan());
+    FE5M2(0x7F).castTo(f, round);
+    EXPECT_TRUE(f.value().isNan());
+    FE5M2(0xFD).castTo(f, round);
+    EXPECT_TRUE(f.value().isNan());
+    FE5M2(0xFE).castTo(f, round);
+    EXPECT_TRUE(f.value().isNan());
+    FE5M2(0xFF).castTo(f, round);
+    EXPECT_TRUE(f.value().isNan());
   }
 }
 
@@ -1100,73 +1581,96 @@ TEST(HexFloatOperationTests, NanTests) {
 template <typename T>
 struct FloatParseCase {
   std::string literal;
-  bool negate_value;
+  LeadingSign leading_sign;
   bool expect_success;
   HexFloat<FloatProxy<T>> expected_value;
 };
+
+const char* str(const LeadingSign& ls) {
+  switch (ls) {
+    case LeadingSign::None:
+      return "(none)";
+    case LeadingSign::Minus:
+      return "-";
+    case LeadingSign::Plus:
+      return "+";
+  }
+  return "";  // should not happen
+}
 
 using ParseNormalFloatTest = ::testing::TestWithParam<FloatParseCase<float>>;
 
 TEST_P(ParseNormalFloatTest, Samples) {
   std::stringstream input(GetParam().literal);
   HexFloat<FloatProxy<float>> parsed_value(0.0f);
-  ParseNormalFloat(input, GetParam().negate_value, parsed_value);
+  ParseNormalFloat(input, GetParam().leading_sign, parsed_value);
   EXPECT_NE(GetParam().expect_success, input.fail())
       << " literal: " << GetParam().literal
-      << " negate: " << GetParam().negate_value;
+      << " leading_sign: " << str(GetParam().leading_sign);
   if (GetParam().expect_success) {
     EXPECT_THAT(parsed_value.value(), Eq(GetParam().expected_value.value()))
         << " literal: " << GetParam().literal
-        << " negate: " << GetParam().negate_value;
+        << " leading_sign: " << str(GetParam().leading_sign);
   }
 }
 
 // Returns a FloatParseCase with expected failure.
 template <typename T>
-FloatParseCase<T> BadFloatParseCase(std::string literal, bool negate_value,
+FloatParseCase<T> BadFloatParseCase(std::string literal,
+                                    LeadingSign leading_sign,
                                     T expected_value) {
   HexFloat<FloatProxy<T>> proxy_expected_value(expected_value);
-  return FloatParseCase<T>{literal, negate_value, false, proxy_expected_value};
+  return FloatParseCase<T>{literal, leading_sign, false, proxy_expected_value};
 }
 
 // Returns a FloatParseCase that should successfully parse to a given value.
 template <typename T>
-FloatParseCase<T> GoodFloatParseCase(std::string literal, bool negate_value,
+FloatParseCase<T> GoodFloatParseCase(std::string literal,
+                                     LeadingSign leading_sign,
                                      T expected_value) {
   HexFloat<FloatProxy<T>> proxy_expected_value(expected_value);
-  return FloatParseCase<T>{literal, negate_value, true, proxy_expected_value};
+  return FloatParseCase<T>{literal, leading_sign, true, proxy_expected_value};
 }
 
 INSTANTIATE_TEST_SUITE_P(
     FloatParse, ParseNormalFloatTest,
     ::testing::ValuesIn(std::vector<FloatParseCase<float>>{
         // Failing cases due to trivially incorrect syntax.
-        BadFloatParseCase("abc", false, 0.0f),
-        BadFloatParseCase("abc", true, 0.0f),
+        BadFloatParseCase("abc", LeadingSign::None, 0.0f),
+        BadFloatParseCase("abc", LeadingSign::Minus, 0.0f),
+        BadFloatParseCase("abc", LeadingSign::Plus, 0.0f),
 
         // Valid cases.
-        GoodFloatParseCase("0", false, 0.0f),
-        GoodFloatParseCase("0.0", false, 0.0f),
-        GoodFloatParseCase("-0.0", false, -0.0f),
-        GoodFloatParseCase("2.0", false, 2.0f),
-        GoodFloatParseCase("-2.0", false, -2.0f),
-        GoodFloatParseCase("+2.0", false, 2.0f),
-        // Cases with negate_value being true.
-        GoodFloatParseCase("0.0", true, -0.0f),
-        GoodFloatParseCase("2.0", true, -2.0f),
+        GoodFloatParseCase("0", LeadingSign::None, 0.0f),
+        GoodFloatParseCase("0.0", LeadingSign::None, 0.0f),
+        GoodFloatParseCase("-0.0", LeadingSign::None, -0.0f),
+        GoodFloatParseCase("2.0", LeadingSign::None, 2.0f),
+        GoodFloatParseCase("-2.0", LeadingSign::None, -2.0f),
+        GoodFloatParseCase("+2.0", LeadingSign::None, 2.0f),
+        // Cases with leading sign
+        GoodFloatParseCase("0.0", LeadingSign::Minus, -0.0f),
+        GoodFloatParseCase("2.0", LeadingSign::Minus, -2.0f),
+        GoodFloatParseCase("0", LeadingSign::Plus, 0.0f),
+        GoodFloatParseCase("0.0", LeadingSign::Plus, 0.0f),
+        GoodFloatParseCase("2.0", LeadingSign::Plus, 2.0f),
 
-        // When negate_value is true, we should not accept a
+        // When a leading sign is present, we should not accept a
         // leading minus or plus.
-        BadFloatParseCase("-0.0", true, 0.0f),
-        BadFloatParseCase("-2.0", true, 0.0f),
-        BadFloatParseCase("+0.0", true, 0.0f),
-        BadFloatParseCase("+2.0", true, 0.0f),
+        BadFloatParseCase("-0.0", LeadingSign::Minus, 0.0f),
+        BadFloatParseCase("-2.0", LeadingSign::Minus, 0.0f),
+        BadFloatParseCase("+0.0", LeadingSign::Minus, 0.0f),
+        BadFloatParseCase("+2.0", LeadingSign::Minus, 0.0f),
+        BadFloatParseCase("-0.0", LeadingSign::Plus, 0.0f),
+        BadFloatParseCase("-2.0", LeadingSign::Plus, 0.0f),
+        BadFloatParseCase("+0.0", LeadingSign::Plus, 0.0f),
+        BadFloatParseCase("+2.0", LeadingSign::Plus, 0.0f),
 
         // Overflow is an error for 32-bit float parsing.
-        BadFloatParseCase("1e40", false, FLT_MAX),
-        BadFloatParseCase("1e40", true, -FLT_MAX),
-        BadFloatParseCase("-1e40", false, -FLT_MAX),
-        // We can't have -1e40 and negate_value == true since
+        BadFloatParseCase("1e40", LeadingSign::None, FLT_MAX),
+        BadFloatParseCase("1e40", LeadingSign::Plus, FLT_MAX),
+        BadFloatParseCase("1e40", LeadingSign::Minus, -FLT_MAX),
+        BadFloatParseCase("-1e40", LeadingSign::None, -FLT_MAX),
+        // We can't have -1e40 and leading sign == Minus since
         // that represents an original case of "--1e40" which
         // is invalid.
     }));
@@ -1177,14 +1681,14 @@ using ParseNormalFloat16Test =
 TEST_P(ParseNormalFloat16Test, Samples) {
   std::stringstream input(GetParam().literal);
   HexFloat<FloatProxy<Float16>> parsed_value(0);
-  ParseNormalFloat(input, GetParam().negate_value, parsed_value);
+  ParseNormalFloat(input, GetParam().leading_sign, parsed_value);
   EXPECT_NE(GetParam().expect_success, input.fail())
       << " literal: " << GetParam().literal
-      << " negate: " << GetParam().negate_value;
+      << " leading_sign: " << str(GetParam().leading_sign);
   if (GetParam().expect_success) {
     EXPECT_THAT(parsed_value.value(), Eq(GetParam().expected_value.value()))
         << " literal: " << GetParam().literal
-        << " negate: " << GetParam().negate_value;
+        << " leading_sign: " << str(GetParam().leading_sign);
   }
 }
 
@@ -1192,26 +1696,158 @@ INSTANTIATE_TEST_SUITE_P(
     Float16Parse, ParseNormalFloat16Test,
     ::testing::ValuesIn(std::vector<FloatParseCase<Float16>>{
         // Failing cases due to trivially incorrect syntax.
-        BadFloatParseCase<Float16>("abc", false, uint16_t{0}),
-        BadFloatParseCase<Float16>("abc", true, uint16_t{0}),
+        BadFloatParseCase<Float16>("abc", LeadingSign::None, uint16_t{0}),
+        BadFloatParseCase<Float16>("abc", LeadingSign::Minus, uint16_t{0}),
+        BadFloatParseCase<Float16>("abc", LeadingSign::Plus, uint16_t{0}),
 
         // Valid cases.
-        GoodFloatParseCase<Float16>("0", false, uint16_t{0}),
-        GoodFloatParseCase<Float16>("0.0", false, uint16_t{0}),
-        GoodFloatParseCase<Float16>("-0.0", false, uint16_t{0x8000}),
-        GoodFloatParseCase<Float16>("2.0", false, uint16_t{0x4000}),
-        GoodFloatParseCase<Float16>("-2.0", false, uint16_t{0xc000}),
-        GoodFloatParseCase<Float16>("+2.0", false, uint16_t{0x4000}),
-        // Cases with negate_value being true.
-        GoodFloatParseCase<Float16>("0.0", true, uint16_t{0x8000}),
-        GoodFloatParseCase<Float16>("2.0", true, uint16_t{0xc000}),
+        GoodFloatParseCase<Float16>("0", LeadingSign::None, uint16_t{0}),
+        GoodFloatParseCase<Float16>("0.0", LeadingSign::None, uint16_t{0}),
+        GoodFloatParseCase<Float16>("-0.0", LeadingSign::None,
+                                    uint16_t{0x8000}),
+        GoodFloatParseCase<Float16>("2.0", LeadingSign::None, uint16_t{0x4000}),
+        GoodFloatParseCase<Float16>("-2.0", LeadingSign::None,
+                                    uint16_t{0xc000}),
+        GoodFloatParseCase<Float16>("+2.0", LeadingSign::None,
+                                    uint16_t{0x4000}),
+        // Cases with leading sign
+        GoodFloatParseCase<Float16>("0", LeadingSign::Plus, uint16_t{0}),
+        GoodFloatParseCase<Float16>("0.0", LeadingSign::Plus, uint16_t{0}),
+        GoodFloatParseCase<Float16>("2.0", LeadingSign::Plus, uint16_t{0x4000}),
+        GoodFloatParseCase<Float16>("0.0", LeadingSign::Minus,
+                                    uint16_t{0x8000}),
+        GoodFloatParseCase<Float16>("2.0", LeadingSign::Minus,
+                                    uint16_t{0xc000}),
 
-        // When negate_value is true, we should not accept a leading minus or
+        // When a leading sign is present, we should not accept a leading minus
+        // or
         // plus.
-        BadFloatParseCase<Float16>("-0.0", true, uint16_t{0}),
-        BadFloatParseCase<Float16>("-2.0", true, uint16_t{0}),
-        BadFloatParseCase<Float16>("+0.0", true, uint16_t{0}),
-        BadFloatParseCase<Float16>("+2.0", true, uint16_t{0}),
+        BadFloatParseCase<Float16>("-0.0", LeadingSign::Minus, uint16_t{0}),
+        BadFloatParseCase<Float16>("-2.0", LeadingSign::Minus, uint16_t{0}),
+        BadFloatParseCase<Float16>("+0.0", LeadingSign::Minus, uint16_t{0}),
+        BadFloatParseCase<Float16>("+2.0", LeadingSign::Minus, uint16_t{0}),
+        BadFloatParseCase<Float16>("-0.0", LeadingSign::Plus, uint16_t{0}),
+        BadFloatParseCase<Float16>("-2.0", LeadingSign::Plus, uint16_t{0}),
+        BadFloatParseCase<Float16>("+0.0", LeadingSign::Plus, uint16_t{0}),
+        BadFloatParseCase<Float16>("+2.0", LeadingSign::Plus, uint16_t{0}),
+    }));
+
+using ParseNormalFloatE4M3Test =
+    ::testing::TestWithParam<FloatParseCase<Float8_E4M3>>;
+
+TEST_P(ParseNormalFloatE4M3Test, Samples) {
+  std::stringstream input(GetParam().literal);
+  HexFloat<FloatProxy<Float8_E4M3>> parsed_value(0);
+  ParseNormalFloat(input, GetParam().leading_sign, parsed_value);
+  EXPECT_NE(GetParam().expect_success, input.fail())
+      << " literal: " << GetParam().literal
+      << " leading_sign: " << str(GetParam().leading_sign);
+  if (GetParam().expect_success) {
+    EXPECT_THAT(parsed_value.value(), Eq(GetParam().expected_value.value()))
+        << " literal: " << GetParam().literal
+        << " leading_sign: " << str(GetParam().leading_sign);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    FloatE4M3Parse, ParseNormalFloatE4M3Test,
+    ::testing::ValuesIn(std::vector<FloatParseCase<Float8_E4M3>>{
+        // Failing cases due to trivially incorrect syntax.
+        BadFloatParseCase<Float8_E4M3>("abc", LeadingSign::None, uint8_t{0}),
+        BadFloatParseCase<Float8_E4M3>("abc", LeadingSign::Minus, uint8_t{0}),
+        BadFloatParseCase<Float8_E4M3>("abc", LeadingSign::Plus, uint8_t{0}),
+
+        // Valid cases.
+        GoodFloatParseCase<Float8_E4M3>("0", LeadingSign::None, uint8_t{0}),
+        GoodFloatParseCase<Float8_E4M3>("0.0", LeadingSign::None, uint8_t{0}),
+        GoodFloatParseCase<Float8_E4M3>("-0.0", LeadingSign::None,
+                                        uint8_t{0x80}),
+        GoodFloatParseCase<Float8_E4M3>("2.0", LeadingSign::None,
+                                        uint8_t{0x40}),
+        GoodFloatParseCase<Float8_E4M3>("-2.0", LeadingSign::None,
+                                        uint8_t{0xc0}),
+        GoodFloatParseCase<Float8_E4M3>("+2.0", LeadingSign::None,
+                                        uint8_t{0x40}),
+        // Cases with leading sign.
+        GoodFloatParseCase<Float8_E4M3>("0", LeadingSign::Plus, uint8_t{0}),
+        GoodFloatParseCase<Float8_E4M3>("0.0", LeadingSign::Plus, uint8_t{0}),
+        GoodFloatParseCase<Float8_E4M3>("2.0", LeadingSign::Plus,
+                                        uint8_t{0x40}),
+        GoodFloatParseCase<Float8_E4M3>("0.0", LeadingSign::Minus,
+                                        uint8_t{0x80}),
+        GoodFloatParseCase<Float8_E4M3>("2.0", LeadingSign::Minus,
+                                        uint8_t{0xc0}),
+
+        // When a leading sign is present, we should not accept a leading minus
+        // or
+        // plus.
+        BadFloatParseCase<Float8_E4M3>("-0.0", LeadingSign::Minus, uint8_t{0}),
+        BadFloatParseCase<Float8_E4M3>("-2.0", LeadingSign::Minus, uint8_t{0}),
+        BadFloatParseCase<Float8_E4M3>("+0.0", LeadingSign::Minus, uint8_t{0}),
+        BadFloatParseCase<Float8_E4M3>("+2.0", LeadingSign::Minus, uint8_t{0}),
+        BadFloatParseCase<Float8_E4M3>("-0.0", LeadingSign::Plus, uint8_t{0}),
+        BadFloatParseCase<Float8_E4M3>("-2.0", LeadingSign::Plus, uint8_t{0}),
+        BadFloatParseCase<Float8_E4M3>("+0.0", LeadingSign::Plus, uint8_t{0}),
+        BadFloatParseCase<Float8_E4M3>("+2.0", LeadingSign::Plus, uint8_t{0}),
+    }));
+
+using ParseNormalFloatE5M2Test =
+    ::testing::TestWithParam<FloatParseCase<Float8_E5M2>>;
+
+TEST_P(ParseNormalFloatE5M2Test, Samples) {
+  std::stringstream input(GetParam().literal);
+  HexFloat<FloatProxy<Float8_E5M2>> parsed_value(0);
+  ParseNormalFloat(input, GetParam().leading_sign, parsed_value);
+  EXPECT_NE(GetParam().expect_success, input.fail())
+      << " literal: " << GetParam().literal
+      << " leading_sign: " << str(GetParam().leading_sign);
+  if (GetParam().expect_success) {
+    EXPECT_THAT(parsed_value.value(), Eq(GetParam().expected_value.value()))
+        << " literal: " << GetParam().literal
+        << " leading_sign: " << str(GetParam().leading_sign);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    FloatE5M2Parse, ParseNormalFloatE5M2Test,
+    ::testing::ValuesIn(std::vector<FloatParseCase<Float8_E5M2>>{
+        // Failing cases due to trivially incorrect syntax.
+        BadFloatParseCase<Float8_E5M2>("abc", LeadingSign::None, uint8_t{0}),
+        BadFloatParseCase<Float8_E5M2>("abc", LeadingSign::Minus, uint8_t{0}),
+        BadFloatParseCase<Float8_E5M2>("abc", LeadingSign::Plus, uint8_t{0}),
+
+        // Valid cases.
+        GoodFloatParseCase<Float8_E5M2>("0", LeadingSign::None, uint8_t{0}),
+        GoodFloatParseCase<Float8_E5M2>("0.0", LeadingSign::None, uint8_t{0}),
+        GoodFloatParseCase<Float8_E5M2>("-0.0", LeadingSign::None,
+                                        uint8_t{0x80}),
+        GoodFloatParseCase<Float8_E5M2>("2.0", LeadingSign::None,
+                                        uint8_t{0x40}),
+        GoodFloatParseCase<Float8_E5M2>("-2.0", LeadingSign::None,
+                                        uint8_t{0xc0}),
+        GoodFloatParseCase<Float8_E5M2>("+2.0", LeadingSign::None,
+                                        uint8_t{0x40}),
+        // Cases with a leading sign
+        GoodFloatParseCase<Float8_E5M2>("0", LeadingSign::Plus, uint8_t{0}),
+        GoodFloatParseCase<Float8_E5M2>("0.0", LeadingSign::Plus, uint8_t{0}),
+        GoodFloatParseCase<Float8_E5M2>("2.0", LeadingSign::Plus,
+                                        uint8_t{0x40}),
+        GoodFloatParseCase<Float8_E5M2>("0.0", LeadingSign::Minus,
+                                        uint8_t{0x80}),
+        GoodFloatParseCase<Float8_E5M2>("2.0", LeadingSign::Minus,
+                                        uint8_t{0xc0}),
+
+        // When a leading sign is present, we should not accept a leading minus
+        // or
+        // plus.
+        BadFloatParseCase<Float8_E5M2>("-0.0", LeadingSign::Minus, uint8_t{0}),
+        BadFloatParseCase<Float8_E5M2>("-2.0", LeadingSign::Minus, uint8_t{0}),
+        BadFloatParseCase<Float8_E5M2>("+0.0", LeadingSign::Minus, uint8_t{0}),
+        BadFloatParseCase<Float8_E5M2>("+2.0", LeadingSign::Minus, uint8_t{0}),
+        BadFloatParseCase<Float8_E5M2>("-0.0", LeadingSign::Plus, uint8_t{0}),
+        BadFloatParseCase<Float8_E5M2>("-2.0", LeadingSign::Plus, uint8_t{0}),
+        BadFloatParseCase<Float8_E5M2>("+0.0", LeadingSign::Plus, uint8_t{0}),
+        BadFloatParseCase<Float8_E5M2>("+2.0", LeadingSign::Plus, uint8_t{0}),
     }));
 
 // A test case for detecting infinities.
@@ -1307,6 +1943,68 @@ INSTANTIATE_TEST_SUITE_P(
         {"-1e400", false, uint16_t{0xfbff}},
     })));
 
+using FloatProxyParseOverflowFloatE4M3Test =
+    ::testing::TestWithParam<OverflowParseCase<uint8_t>>;
+
+TEST_P(FloatProxyParseOverflowFloatE4M3Test, Sample) {
+  std::istringstream input(GetParam().input);
+  HexFloat<FloatProxy<Float8_E4M3>> value(0);
+  input >> value;
+  EXPECT_NE(GetParam().expect_success, input.fail())
+      << " literal: " << GetParam().input;
+  if (GetParam().expect_success) {
+    EXPECT_THAT(value.value().data(), Eq(GetParam().expected_value))
+        << " literal: " << GetParam().input;
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    FloatE4M3Overflow, FloatProxyParseOverflowFloatE4M3Test,
+    ::testing::ValuesIn(std::vector<OverflowParseCase<uint8_t>>({
+        {"0", true, uint8_t{0}},
+        {"0.0", true, uint8_t{0}},
+        {"1.0", true, uint8_t{0x38}},
+        // Overflow for E4M3 float is an error, and returns max or
+        // lowest value.
+        {"1e38", false, uint8_t{0x7e}},
+        {"1e40", false, uint8_t{0x7e}},
+        {"1e400", false, uint8_t{0x7e}},
+        {"-1e38", false, uint8_t{0xfe}},
+        {"-1e40", false, uint8_t{0xfe}},
+        {"-1e400", false, uint8_t{0xfe}},
+    })));
+
+using FloatProxyParseOverflowFloatE5M2Test =
+    ::testing::TestWithParam<OverflowParseCase<uint8_t>>;
+
+TEST_P(FloatProxyParseOverflowFloatE5M2Test, Sample) {
+  std::istringstream input(GetParam().input);
+  HexFloat<FloatProxy<Float8_E5M2>> value(0);
+  input >> value;
+  EXPECT_NE(GetParam().expect_success, input.fail())
+      << " literal: " << GetParam().input;
+  if (GetParam().expect_success) {
+    EXPECT_THAT(value.value().data(), Eq(GetParam().expected_value))
+        << " literal: " << GetParam().input;
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    FloatE5M2Overflow, FloatProxyParseOverflowFloatE5M2Test,
+    ::testing::ValuesIn(std::vector<OverflowParseCase<uint8_t>>({
+        {"0", true, uint8_t{0}},
+        {"0.0", true, uint8_t{0}},
+        {"1.0", true, uint8_t{0x3c}},
+        // Overflow for E5M2 float is an error, and returns max or
+        // lowest value.
+        {"1e38", false, uint8_t{0x7b}},
+        {"1e40", false, uint8_t{0x7b}},
+        {"1e400", false, uint8_t{0x7b}},
+        {"-1e38", false, uint8_t{0xfb}},
+        {"-1e40", false, uint8_t{0xfb}},
+        {"-1e400", false, uint8_t{0xfb}},
+    })));
+
 TEST(FloatProxy, Max) {
   EXPECT_THAT(FloatProxy<Float16>::max().getAsFloat().get_value(),
               Eq(uint16_t{0x7bff}));
@@ -1351,6 +2049,10 @@ std::ostream& operator<<(std::ostream& os, const StreamParseCase<T>& fspc) {
 using Float32StreamParseTest = ::testing::TestWithParam<StreamParseCase<float>>;
 using Float16StreamParseTest =
     ::testing::TestWithParam<StreamParseCase<Float16>>;
+using FloatE4M3StreamParseTest =
+    ::testing::TestWithParam<StreamParseCase<Float8_E4M3>>;
+using FloatE5M2StreamParseTest =
+    ::testing::TestWithParam<StreamParseCase<Float8_E5M2>>;
 
 TEST_P(Float32StreamParseTest, Samples) {
   std::stringstream input(GetParam().literal);
@@ -1518,6 +2220,18 @@ INSTANTIATE_TEST_SUITE_P(
     }));
 
 INSTANTIATE_TEST_SUITE_P(
+    Underflow, Float32StreamParseTest,
+    ::testing::ValuesIn(std::vector<StreamParseCase<float>>{
+        // Underflow
+        {"0x1.p-149", true, "", ldexpf(1, -149)},
+        {"0x1.p-150", true, "", 0.0f},
+        {"+0x1.p-149", true, "", ldexpf(1, -149)},
+        {"+0x1.p-150", true, "", 0.0f},
+        {"-0x1.p-149", true, "", -ldexpf(1, -149)},
+        {"-0x1.p-150", true, "", -0.0f},
+    }));
+
+INSTANTIATE_TEST_SUITE_P(
     HexFloat16ExcessSignificantDigits, Float16StreamParseTest,
     ::testing::ValuesIn(std::vector<StreamParseCase<Float16>>{
         // Zero
@@ -1619,6 +2333,197 @@ INSTANTIATE_TEST_SUITE_P(
         {"0x4.5a7ffffp0", true, "", makeF16(0, 2, 0x05a)},
         {"0x8.5a40000p0", true, "", makeF16(0, 3, 0x02d)},
         {"0x8.5a7ffffp0", true, "", makeF16(0, 3, 0x02d)}}));
+
+INSTANTIATE_TEST_SUITE_P(
+    Underflow, Float16StreamParseTest,
+    ::testing::ValuesIn(std::vector<StreamParseCase<Float16>>{
+        // Underflow
+        {"0x1.p-24", true, "", Float16(uint16_t(1))},
+        {"0x1.p-25", true, "", Float16(uint16_t(0))},
+        {"+0x1.p-24", true, "", Float16(uint16_t(1))},
+        {"+0x1.p-25", true, "", Float16(uint16_t(0))},
+        {"-0x1.p-24", true, "", Float16(uint16_t(0x8001))},
+        {"-0x1.p-25", true, "", Float16(uint16_t(0x8000))},
+    }));
+
+// Returns a E4M3 constructed from its sign bit, unbiased exponent, and
+// mantissa.
+Float8_E4M3 makeE4M3(int sign_bit, int unbiased_exp, int mantissa) {
+  EXPECT_LE(0, sign_bit);
+  EXPECT_LE(sign_bit, 1);
+  // Exponent is 4 bits, with bias of 7.
+  EXPECT_LE(-7, unbiased_exp);  // -7 means zero or subnormal
+  EXPECT_LE(unbiased_exp, 8);
+  EXPECT_LE(0, mantissa);
+  EXPECT_LE(mantissa, 0x7);
+  const unsigned biased_exp = 7 + unbiased_exp;
+  const uint32_t as_bits = sign_bit << 7 | (biased_exp << 3) | mantissa;
+  EXPECT_LE(as_bits, 0xffu);
+  return Float8_E4M3(static_cast<uint8_t>(as_bits));
+}
+
+TEST_P(FloatE4M3StreamParseTest, Samples) {
+  std::stringstream input(GetParam().literal);
+  HexFloat<FloatProxy<Float8_E4M3>> parsed_value(makeE4M3(0, 0, 0));
+  // Hex floats must be read with the stream input operator.
+  input >> parsed_value;
+  if (GetParam().expect_success) {
+    EXPECT_FALSE(input.fail());
+    std::string suffix;
+    input >> suffix;
+    const auto got = parsed_value.value();
+    const auto expected = GetParam().expected_value.value();
+    EXPECT_EQ(got.data(), expected.data())
+        << "got: " << got << " expected: " << expected;
+  } else {
+    EXPECT_TRUE(input.fail());
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    HexFloatE4M3IncreasingExponentsAndMantissa, FloatE4M3StreamParseTest,
+    ::testing::ValuesIn(std::vector<StreamParseCase<Float8_E4M3>>{
+        // Zero
+        {"0x0p0", true, "", makeE4M3(0, -7, 0x0)},
+        {"0x0p5000000000000", true, "", makeE4M3(0, -7, 0x0)},
+        {"-0x0p5000000000000", true, "", makeE4M3(1, -7, 0x0)},
+        // Leading 1
+        {"0x1p0", true, "", makeE4M3(0, 0, 0x0)},
+        {"0x1p1", true, "", makeE4M3(0, 1, 0x0)},
+        {"0x1p8", true, "", makeE4M3(0, 8, 0x0)},
+        {"0x1p-1", true, "", makeE4M3(0, -1, 0x0)},
+        {"0x1p-6", true, "", makeE4M3(0, -6, 0x0)},
+        // Leading 2
+        {"0x2p0", true, "", makeE4M3(0, 1, 0x0)},
+        {"0x2p1", true, "", makeE4M3(0, 2, 0x0)},
+        {"0x2p7", true, "", makeE4M3(0, 8, 0x0)},
+        {"0x2p-1", true, "", makeE4M3(0, 0, 0x0)},
+        {"0x2p-7", true, "", makeE4M3(0, -6, 0x0)},
+        // Leading 8
+        {"0x8p0", true, "", makeE4M3(0, 3, 0x0)},
+        {"0x8p1", true, "", makeE4M3(0, 4, 0x0)},
+        {"0x8p5", true, "", makeE4M3(0, 8, 0x0)},
+        {"0x8p-3", true, "", makeE4M3(0, 0, 0x0)},
+        {"0x8p-9", true, "", makeE4M3(0, -6, 0x0)},
+        // Leading 10
+        {"0x10.0p0", true, "", makeE4M3(0, 4, 0x0)},
+        {"0x10.0p1", true, "", makeE4M3(0, 5, 0x0)},
+        {"0x10.0p4", true, "", makeE4M3(0, 8, 0x0)},
+        {"0x10.0p-5", true, "", makeE4M3(0, -1, 0x0)},
+        {"0x10.0p-10", true, "", makeE4M3(0, -6, 0x0)},
+        // Samples that drop out bits *and* truncate significant bits
+        // that can't be represented.
+        // Progressively increase the leading digit.
+        {"0x1.5a40000p0", true, "", makeE4M3(0, 0, 0x2)},
+        {"0x1.5a7ffffp0", true, "", makeE4M3(0, 0, 0x2)},
+        {"0x2.5a40000p0", true, "", makeE4M3(0, 1, 0x1)},
+        {"0x2.5a7ffffp0", true, "", makeE4M3(0, 1, 0x1)},
+        {"0x4.5a40000p0", true, "", makeE4M3(0, 2, 0x0)},
+        {"0x4.5a7ffffp0", true, "", makeE4M3(0, 2, 0x0)},
+        {"0x8.5a40000p0", true, "", makeE4M3(0, 3, 0x0)},
+        {"0x8.5a7ffffp0", true, "", makeE4M3(0, 3, 0x0)}}));
+
+INSTANTIATE_TEST_SUITE_P(
+    Underflow, FloatE4M3StreamParseTest,
+    ::testing::ValuesIn(std::vector<StreamParseCase<Float8_E4M3>>{
+        // Underflow
+        {"0x1.p-9", true, "", Float8_E4M3(uint8_t(1))},
+        {"0x1.p-10", true, "", Float8_E4M3(uint8_t(0))},
+        {"+0x1.p-9", true, "", Float8_E4M3(uint8_t(1))},
+        {"+0x1.p-10", true, "", Float8_E4M3(uint8_t(0))},
+        {"-0x1.p-9", true, "", Float8_E4M3(uint8_t(0x81))},
+        {"-0x1.p-10", true, "", Float8_E4M3(uint8_t(0x80))},
+    }));
+
+// Returns a E5M2 constructed from its sign bit, unbiased exponent, and
+// mantissa.
+Float8_E5M2 makeE5M2(int sign_bit, int unbiased_exp, int mantissa) {
+  EXPECT_LE(0, sign_bit);
+  EXPECT_LE(sign_bit, 1);
+  // Exponent is 5 bits, with bias of 15.
+  EXPECT_LE(-15, unbiased_exp);  // -15 means zero or subnormal
+  EXPECT_LE(unbiased_exp, 16);
+  EXPECT_LE(0, mantissa);
+  EXPECT_LE(mantissa, 0x3);
+  const unsigned biased_exp = 15 + unbiased_exp;
+  const uint32_t as_bits = sign_bit << 7 | (biased_exp << 2) | mantissa;
+  EXPECT_LE(as_bits, 0xffu);
+  return Float8_E5M2(static_cast<uint8_t>(as_bits));
+}
+
+TEST_P(FloatE5M2StreamParseTest, Samples) {
+  std::stringstream input(GetParam().literal);
+  HexFloat<FloatProxy<Float8_E5M2>> parsed_value(makeE5M2(0, 0, 0));
+  // Hex floats must be read with the stream input operator.
+  input >> parsed_value;
+  if (GetParam().expect_success) {
+    EXPECT_FALSE(input.fail());
+    std::string suffix;
+    input >> suffix;
+    const auto got = parsed_value.value();
+    const auto expected = GetParam().expected_value.value();
+    EXPECT_EQ(got.data(), expected.data())
+        << "got: " << got << " expected: " << expected;
+  } else {
+    EXPECT_TRUE(input.fail());
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    HexFloatE5M2IncreasingExponentsAndMantissa, FloatE5M2StreamParseTest,
+    ::testing::ValuesIn(std::vector<StreamParseCase<Float8_E5M2>>{
+        // Zero
+        {"0x0p0", true, "", makeE5M2(0, -15, 0x0)},
+        {"0x0p5000000000000", true, "", makeE5M2(0, -15, 0x0)},
+        {"-0x0p5000000000000", true, "", makeE5M2(1, -15, 0x0)},
+        // Leading 1
+        {"0x1p0", true, "", makeE5M2(0, 0, 0x0)},
+        {"0x1p1", true, "", makeE5M2(0, 1, 0x0)},
+        {"0x1p16", true, "", makeE5M2(0, 16, 0x0)},
+        {"0x1p-1", true, "", makeE5M2(0, -1, 0x0)},
+        {"0x1p-14", true, "", makeE5M2(0, -14, 0x0)},
+        // Leading 2
+        {"0x2p0", true, "", makeE5M2(0, 1, 0x0)},
+        {"0x2p1", true, "", makeE5M2(0, 2, 0x0)},
+        {"0x2p15", true, "", makeE5M2(0, 16, 0x0)},
+        {"0x2p-1", true, "", makeE5M2(0, 0, 0x0)},
+        {"0x2p-15", true, "", makeE5M2(0, -14, 0x0)},
+        // Leading 8
+        {"0x8p0", true, "", makeE5M2(0, 3, 0x0)},
+        {"0x8p1", true, "", makeE5M2(0, 4, 0x0)},
+        {"0x8p13", true, "", makeE5M2(0, 16, 0x0)},
+        {"0x8p-3", true, "", makeE5M2(0, 0, 0x0)},
+        {"0x8p-17", true, "", makeE5M2(0, -14, 0x0)},
+        // Leading 10
+        {"0x10.0p0", true, "", makeE5M2(0, 4, 0x0)},
+        {"0x10.0p1", true, "", makeE5M2(0, 5, 0x0)},
+        {"0x10.0p12", true, "", makeE5M2(0, 16, 0x0)},
+        {"0x10.0p-5", true, "", makeE5M2(0, -1, 0x0)},
+        {"0x10.0p-18", true, "", makeE5M2(0, -14, 0x0)},
+        // Samples that drop out bits *and* truncate significant bits
+        // that can't be represented.
+        // Progressively increase the leading digit.
+        {"0x1.aa40000p0", true, "", makeE5M2(0, 0, 0x2)},
+        {"0x1.aa7ffffp0", true, "", makeE5M2(0, 0, 0x2)},
+        {"0x2.aa40000p0", true, "", makeE5M2(0, 1, 0x1)},
+        {"0x2.aa7ffffp0", true, "", makeE5M2(0, 1, 0x1)},
+        {"0x4.aa40000p0", true, "", makeE5M2(0, 2, 0x0)},
+        {"0x4.aa7ffffp0", true, "", makeE5M2(0, 2, 0x0)},
+        {"0x8.aa40000p0", true, "", makeE5M2(0, 3, 0x0)},
+        {"0x8.aa7ffffp0", true, "", makeE5M2(0, 3, 0x0)},
+    }));
+
+INSTANTIATE_TEST_SUITE_P(
+    Underflow, FloatE5M2StreamParseTest,
+    ::testing::ValuesIn(std::vector<StreamParseCase<Float8_E5M2>>{
+        // Underflow
+        {"0x1.p-16", true, "", Float8_E5M2(uint8_t(1))},
+        {"0x1.p-17", true, "", Float8_E5M2(uint8_t(0))},
+        {"+0x1.p-16", true, "", Float8_E5M2(uint8_t(1))},
+        {"+0x1.p-17", true, "", Float8_E5M2(uint8_t(0))},
+        {"-0x1.p-16", true, "", Float8_E5M2(uint8_t(0x81))},
+        {"-0x1.p-17", true, "", Float8_E5M2(uint8_t(0x80))},
+    }));
 
 }  // namespace
 }  // namespace utils

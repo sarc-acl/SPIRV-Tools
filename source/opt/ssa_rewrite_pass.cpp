@@ -87,13 +87,15 @@ std::string SSARewriter::PhiCandidate::PrettyPrint(const CFG* cfg) const {
   return str.str();
 }
 
-SSARewriter::PhiCandidate& SSARewriter::CreatePhiCandidate(uint32_t var_id,
+SSARewriter::PhiCandidate* SSARewriter::CreatePhiCandidate(uint32_t var_id,
                                                            BasicBlock* bb) {
-  // TODO(1841): Handle id overflow.
   uint32_t phi_result_id = pass_->context()->TakeNextId();
+  if (phi_result_id == 0) {
+    return nullptr;
+  }
   auto result = phi_candidates_.emplace(
       phi_result_id, PhiCandidate(var_id, phi_result_id, bb));
-  PhiCandidate& phi_candidate = result.first->second;
+  PhiCandidate* phi_candidate = &result.first->second;
   return phi_candidate;
 }
 
@@ -268,11 +270,12 @@ uint32_t SSARewriter::GetReachingDef(uint32_t var_id, BasicBlock* bb) {
     // If there is more than one predecessor, this is a join block which may
     // require a Phi instruction.  This will act as |var_id|'s current
     // definition to break potential cycles.
-    PhiCandidate& phi_candidate = CreatePhiCandidate(var_id, bb);
+    PhiCandidate* phi_candidate = CreatePhiCandidate(var_id, bb);
+    if (phi_candidate == nullptr) return 0;
 
     // Set the value for |bb| to avoid an infinite recursion.
-    WriteVariable(var_id, bb, phi_candidate.result_id());
-    val_id = AddPhiOperands(&phi_candidate);
+    WriteVariable(var_id, bb, phi_candidate->result_id());
+    val_id = AddPhiOperands(phi_candidate);
   }
 
   // If we could not find a store for this variable in the path from the root
@@ -488,6 +491,10 @@ uint32_t SSARewriter::GetPhiArgument(const PhiCandidate* phi_candidate,
     arg_id = phi_user->copy_of();
   }
 
+  if (pass_->context()->id_overflow()) {
+    return 0;
+  }
+
   assert(false &&
          "No Phi candidates in the copy-of chain are ready to be generated");
 
@@ -666,15 +673,23 @@ Pass::Status SSARewriter::RewriteFunctionIntoSSA(Function* fp) {
         return true;
       });
 
-  if (!succeeded) {
+  if (!succeeded || pass_->context()->id_overflow()) {
     return Pass::Status::Failure;
   }
 
   // Remove trivial Phis and add arguments to incomplete Phis.
   FinalizePhiCandidates();
 
+  if (pass_->context()->id_overflow()) {
+    return Pass::Status::Failure;
+  }
+
   // Finally, apply all the replacements in the IR.
   bool modified = ApplyReplacements();
+
+  if (pass_->context()->id_overflow()) {
+    return Pass::Status::Failure;
+  }
 
 #if SSA_REWRITE_DEBUGGING_LEVEL > 0
   std::cerr << "\n\n\nFunction after SSA rewrite:\n"
@@ -693,12 +708,12 @@ Pass::Status SSARewritePass::Process() {
     }
     status =
         CombineStatus(status, SSARewriter(this).RewriteFunctionIntoSSA(&fn));
+    if (status == Status::Failure || context()->id_overflow()) {
+      return Status::Failure;
+    }
     // Kill DebugDeclares for target variables.
     for (auto var_id : seen_target_vars_) {
       context()->get_debug_info_mgr()->KillDebugDeclares(var_id);
-    }
-    if (status == Status::Failure) {
-      break;
     }
   }
   return status;

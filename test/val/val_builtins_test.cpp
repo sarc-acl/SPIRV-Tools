@@ -1,6 +1,7 @@
 // Copyright (c) 2018 Google LLC.
 // Modifications Copyright (C) 2020 Advanced Micro Devices, Inc. All rights
 // reserved.
+// Copyright (C) 2026 Qualcomm Technologies, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,8 +27,6 @@
 #include <vector>
 
 #include "gmock/gmock.h"
-#include "source/spirv_target_env.h"
-#include "test/unit_spirv.h"
 #include "test/val/val_code_generator.h"
 #include "test/val/val_fixtures.h"
 
@@ -64,9 +63,9 @@ using ValidateVulkanCombineBuiltInArrayedVariable =
     spvtest::ValidateBase<std::tuple<const char*, const char*, const char*,
                                      const char*, const char*, TestResult>>;
 using ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult =
-    spvtest::ValidateBase<
-        std::tuple<const char*, const char*, const char*, const char*,
-                   const char*, const char*, const char*, TestResult>>;
+    spvtest::ValidateBase<std::tuple<spv_target_env, const char*, const char*,
+                                     const char*, const char*, const char*,
+                                     const char*, const char*, TestResult>>;
 
 using ValidateGenericCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult =
     spvtest::ValidateBase<std::tuple<spv_target_env, const char*, const char*,
@@ -89,6 +88,10 @@ CodeGenerator GetInMainCodeGenerator(const char* const built_in,
 
   if (capabilities) {
     generator.capabilities_ += capabilities;
+    if (std::string_view(capabilities).find("VulkanMemoryModel") !=
+        std::string_view::npos) {
+      generator.memory_model_ = "OpMemoryModel Logical VulkanKHR\n";
+    }
   }
   if (extensions) {
     generator.extensions_ += extensions;
@@ -98,6 +101,10 @@ CodeGenerator GetInMainCodeGenerator(const char* const built_in,
                                OpMemberDecorate %built_in_type 0 BuiltIn )";
   generator.before_types_ += built_in;
   generator.before_types_ += "\n";
+
+  if (strncmp(built_in, "TessLevel", 9) == 0) {
+    generator.before_types_ += "OpMemberDecorate %built_in_type 0 Patch\n";
+  }
 
   std::ostringstream after_types;
 
@@ -139,7 +146,11 @@ CodeGenerator GetInMainCodeGenerator(const char* const built_in,
     execution_modes << "OpExecutionMode %" << entry_point.name
                     << " OutputPoints\n";
   }
-  if (0 == std::strcmp(execution_model, "GLCompute")) {
+  if (0 == std::strcmp(execution_model, "GLCompute") ||
+      0 == std::strcmp(execution_model, "MeshEXT") ||
+      0 == std::strcmp(execution_model, "MeshNV") ||
+      0 == std::strcmp(execution_model, "MeshEXT") ||
+      0 == std::strcmp(execution_model, "TaskNV")) {
     execution_modes << "OpExecutionMode %" << entry_point.name
                     << " LocalSize 1 1 1\n";
   }
@@ -181,22 +192,22 @@ TEST_P(ValidateVulkanCombineBuiltInExecutionModelDataTypeResult, InMain) {
 TEST_P(
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     InMain) {
-  const char* const built_in = std::get<0>(GetParam());
-  const char* const execution_model = std::get<1>(GetParam());
-  const char* const storage_class = std::get<2>(GetParam());
-  const char* const data_type = std::get<3>(GetParam());
-  const char* const capabilities = std::get<4>(GetParam());
-  const char* const extensions = std::get<5>(GetParam());
-  const char* const vuid = std::get<6>(GetParam());
-  const TestResult& test_result = std::get<7>(GetParam());
+  const spv_target_env env = std::get<0>(GetParam());
+  const char* const built_in = std::get<1>(GetParam());
+  const char* const execution_model = std::get<2>(GetParam());
+  const char* const storage_class = std::get<3>(GetParam());
+  const char* const data_type = std::get<4>(GetParam());
+  const char* const capabilities = std::get<5>(GetParam());
+  const char* const extensions = std::get<6>(GetParam());
+  const char* const vuid = std::get<7>(GetParam());
+  const TestResult& test_result = std::get<8>(GetParam());
 
   CodeGenerator generator =
       GetInMainCodeGenerator(built_in, execution_model, storage_class,
                              capabilities, extensions, data_type);
 
-  CompileSuccessfully(generator.Build(), SPV_ENV_VULKAN_1_0);
-  ASSERT_EQ(test_result.validation_result,
-            ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  CompileSuccessfully(generator.Build(), env);
+  ASSERT_EQ(test_result.validation_result, ValidateInstructions(env));
   if (test_result.error_str) {
     EXPECT_THAT(getDiagnosticString(), HasSubstr(test_result.error_str));
   }
@@ -248,6 +259,10 @@ CodeGenerator GetInFunctionCodeGenerator(const char* const built_in,
 
   if (capabilities) {
     generator.capabilities_ += capabilities;
+    if (std::string_view(capabilities).find("VulkanMemoryModel") !=
+        std::string_view::npos) {
+      generator.memory_model_ = "OpMemoryModel Logical VulkanKHR\n";
+    }
   }
   if (extensions) {
     generator.extensions_ += extensions;
@@ -257,6 +272,10 @@ CodeGenerator GetInFunctionCodeGenerator(const char* const built_in,
                               OpMemberDecorate %built_in_type 0 BuiltIn )";
   generator.before_types_ += built_in;
   generator.before_types_ += "\n";
+
+  if (strncmp(built_in, "TessLevel", 9) == 0) {
+    generator.before_types_ += "OpMemberDecorate %built_in_type 0 Patch\n";
+  }
 
   std::ostringstream after_types;
   after_types << "%built_in_type = OpTypeStruct " << data_type << "\n";
@@ -297,7 +316,11 @@ CodeGenerator GetInFunctionCodeGenerator(const char* const built_in,
     execution_modes << "OpExecutionMode %" << entry_point.name
                     << " OutputPoints\n";
   }
-  if (0 == std::strcmp(execution_model, "GLCompute")) {
+  if (0 == std::strcmp(execution_model, "GLCompute") ||
+      0 == std::strcmp(execution_model, "MeshEXT") ||
+      0 == std::strcmp(execution_model, "MeshNV") ||
+      0 == std::strcmp(execution_model, "MeshEXT") ||
+      0 == std::strcmp(execution_model, "TaskNV")) {
     execution_modes << "OpExecutionMode %" << entry_point.name
                     << " LocalSize 1 1 1\n";
   }
@@ -350,22 +373,22 @@ TEST_P(ValidateVulkanCombineBuiltInExecutionModelDataTypeResult, InFunction) {
 TEST_P(
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     InFunction) {
-  const char* const built_in = std::get<0>(GetParam());
-  const char* const execution_model = std::get<1>(GetParam());
-  const char* const storage_class = std::get<2>(GetParam());
-  const char* const data_type = std::get<3>(GetParam());
-  const char* const capabilities = std::get<4>(GetParam());
-  const char* const extensions = std::get<5>(GetParam());
-  const char* const vuid = std::get<6>(GetParam());
-  const TestResult& test_result = std::get<7>(GetParam());
+  const spv_target_env env = std::get<0>(GetParam());
+  const char* const built_in = std::get<1>(GetParam());
+  const char* const execution_model = std::get<2>(GetParam());
+  const char* const storage_class = std::get<3>(GetParam());
+  const char* const data_type = std::get<4>(GetParam());
+  const char* const capabilities = std::get<5>(GetParam());
+  const char* const extensions = std::get<6>(GetParam());
+  const char* const vuid = std::get<7>(GetParam());
+  const TestResult& test_result = std::get<8>(GetParam());
 
   CodeGenerator generator =
       GetInFunctionCodeGenerator(built_in, execution_model, storage_class,
                                  capabilities, extensions, data_type);
 
-  CompileSuccessfully(generator.Build(), SPV_ENV_VULKAN_1_0);
-  ASSERT_EQ(test_result.validation_result,
-            ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  CompileSuccessfully(generator.Build(), env);
+  ASSERT_EQ(test_result.validation_result, ValidateInstructions(env));
   if (test_result.error_str) {
     EXPECT_THAT(getDiagnosticString(), HasSubstr(test_result.error_str));
   }
@@ -387,6 +410,10 @@ CodeGenerator GetVariableCodeGenerator(const char* const built_in,
 
   if (capabilities) {
     generator.capabilities_ += capabilities;
+    if (std::string_view(capabilities).find("VulkanMemoryModel") !=
+        std::string_view::npos) {
+      generator.memory_model_ = "OpMemoryModel Logical VulkanKHR\n";
+    }
   }
   if (extensions) {
     generator.extensions_ += extensions;
@@ -395,6 +422,11 @@ CodeGenerator GetVariableCodeGenerator(const char* const built_in,
   generator.before_types_ = "OpDecorate %built_in_var BuiltIn ";
   generator.before_types_ += built_in;
   generator.before_types_ += "\n";
+
+  if (strncmp(built_in, "TessLevel", 9) == 0) {
+    generator.before_types_ += "OpDecorate %built_in_var Patch\n";
+  }
+
   if ((0 == std::strcmp(storage_class, "Input")) &&
       (0 == std::strcmp(execution_model, "Fragment"))) {
     // ensure any needed input types that might require Flat
@@ -423,7 +455,7 @@ CodeGenerator GetVariableCodeGenerator(const char* const built_in,
   }
   // Any kind of reference would do.
   entry_point.body = R"(
-%val = OpBitcast %u32 %built_in_var
+%val = OpCopyObject %built_in_ptr %built_in_var
 )";
 
   std::ostringstream execution_modes;
@@ -441,7 +473,11 @@ CodeGenerator GetVariableCodeGenerator(const char* const built_in,
     execution_modes << "OpExecutionMode %" << entry_point.name
                     << " OutputPoints\n";
   }
-  if (0 == std::strcmp(execution_model, "GLCompute")) {
+  if (0 == std::strcmp(execution_model, "GLCompute") ||
+      0 == std::strcmp(execution_model, "MeshEXT") ||
+      0 == std::strcmp(execution_model, "MeshNV") ||
+      0 == std::strcmp(execution_model, "MeshEXT") ||
+      0 == std::strcmp(execution_model, "TaskNV")) {
     execution_modes << "OpExecutionMode %" << entry_point.name
                     << " LocalSize 1 1 1\n";
   }
@@ -480,22 +516,22 @@ TEST_P(ValidateVulkanCombineBuiltInExecutionModelDataTypeResult, Variable) {
 TEST_P(
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Variable) {
-  const char* const built_in = std::get<0>(GetParam());
-  const char* const execution_model = std::get<1>(GetParam());
-  const char* const storage_class = std::get<2>(GetParam());
-  const char* const data_type = std::get<3>(GetParam());
-  const char* const capabilities = std::get<4>(GetParam());
-  const char* const extensions = std::get<5>(GetParam());
-  const char* const vuid = std::get<6>(GetParam());
-  const TestResult& test_result = std::get<7>(GetParam());
+  const spv_target_env env = std::get<0>(GetParam());
+  const char* const built_in = std::get<1>(GetParam());
+  const char* const execution_model = std::get<2>(GetParam());
+  const char* const storage_class = std::get<3>(GetParam());
+  const char* const data_type = std::get<4>(GetParam());
+  const char* const capabilities = std::get<5>(GetParam());
+  const char* const extensions = std::get<6>(GetParam());
+  const char* const vuid = std::get<7>(GetParam());
+  const TestResult& test_result = std::get<8>(GetParam());
 
   CodeGenerator generator =
       GetVariableCodeGenerator(built_in, execution_model, storage_class,
                                capabilities, extensions, data_type);
 
-  CompileSuccessfully(generator.Build(), SPV_ENV_VULKAN_1_0);
-  ASSERT_EQ(test_result.validation_result,
-            ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  CompileSuccessfully(generator.Build(), env);
+  ASSERT_EQ(test_result.validation_result, ValidateInstructions(env));
   if (test_result.error_str) {
     EXPECT_THAT(getDiagnosticString(), HasSubstr(test_result.error_str));
   }
@@ -845,6 +881,45 @@ INSTANTIATE_TEST_SUITE_P(
             Values(TestResult(SPV_ERROR_INVALID_DATA,
                               "needs to be a 3-component 32-bit int vector",
                               "has components with bit width 64"))));
+
+INSTANTIATE_TEST_SUITE_P(
+    LocalInvocationIndexSuccess,
+    ValidateVulkanCombineBuiltInExecutionModelDataTypeResult,
+    Combine(Values("LocalInvocationIndex"), Values("GLCompute"),
+            Values("Input"), Values("%u32"), Values(nullptr),
+            Values(TestResult())));
+
+INSTANTIATE_TEST_SUITE_P(
+    LocalInvocationIndexNotGLCompute,
+    ValidateVulkanCombineBuiltInExecutionModelDataTypeResult,
+    Combine(Values("LocalInvocationIndex"),
+            Values("Vertex", "Fragment", "Geometry", "TessellationControl",
+                   "TessellationEvaluation"),
+            Values("Input"), Values("%u32"),
+            Values("VUID-LocalInvocationIndex-LocalInvocationIndex-04284"),
+            Values(TestResult(SPV_ERROR_INVALID_DATA,
+                              "to be used only with GLCompute, MeshNV, "
+                              "TaskNV, MeshEXT or TaskEXT execution model"))));
+
+INSTANTIATE_TEST_SUITE_P(
+    LocalInvocationIndexNotInput,
+    ValidateVulkanCombineBuiltInExecutionModelDataTypeResult,
+    Combine(Values("LocalInvocationIndex"), Values("GLCompute"),
+            Values("Output"), Values("%u32"),
+            Values("VUID-LocalInvocationIndex-LocalInvocationIndex-04285"),
+            Values(TestResult(
+                SPV_ERROR_INVALID_DATA,
+                "to be only used for variables with Input storage class",
+                "uses storage class Output"))));
+
+INSTANTIATE_TEST_SUITE_P(
+    LocalInvocationIndexNot32Int,
+    ValidateVulkanCombineBuiltInExecutionModelDataTypeResult,
+    Combine(Values("LocalInvocationIndex"), Values("GLCompute"),
+            Values("Input"), Values("%u32vec3", "%f32"),
+            Values("VUID-LocalInvocationIndex-LocalInvocationIndex-04286"),
+            Values(TestResult(SPV_ERROR_INVALID_DATA,
+                              "needs to be a 32-bit int scalar"))));
 
 INSTANTIATE_TEST_SUITE_P(
     InvocationIdSuccess,
@@ -1423,16 +1498,6 @@ INSTANTIATE_TEST_SUITE_P(
                           "to be used only with Fragment execution model"))));
 
 INSTANTIATE_TEST_SUITE_P(
-    SampleMaskWrongStorageClass,
-    ValidateVulkanCombineBuiltInExecutionModelDataTypeResult,
-    Combine(Values("SampleMask"), Values("Fragment"), Values("Workgroup"),
-            Values("%u32arr2"), Values("VUID-SampleMask-SampleMask-04358"),
-            Values(TestResult(
-                SPV_ERROR_INVALID_DATA,
-                "Vulkan spec allows BuiltIn SampleMask to be only used for "
-                "variables with Input or Output storage class"))));
-
-INSTANTIATE_TEST_SUITE_P(
     SampleMaskNotArray,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeResult,
     Combine(Values("SampleMask"), Values("Fragment"), Values("Input"),
@@ -1802,8 +1867,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     BaseInstanceOrVertexSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("BaseInstance", "BaseVertex"), Values("Vertex"),
-            Values("Input"), Values("%u32"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("BaseInstance", "BaseVertex"),
+            Values("Vertex"), Values("Input"), Values("%u32"),
             Values("OpCapability DrawParameters\n"),
             Values("OpExtension \"SPV_KHR_shader_draw_parameters\"\n"),
             Values(nullptr), Values(TestResult())));
@@ -1811,7 +1876,7 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     BaseInstanceOrVertexInvalidExecutionModel,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("BaseInstance", "BaseVertex"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("BaseInstance", "BaseVertex"),
             Values("Fragment", "GLCompute", "Geometry", "TessellationControl",
                    "TessellationEvaluation"),
             Values("Input"), Values("%u32"),
@@ -1825,8 +1890,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     BaseInstanceOrVertexNotInput,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("BaseInstance", "BaseVertex"), Values("Vertex"),
-            Values("Output"), Values("%u32"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("BaseInstance", "BaseVertex"),
+            Values("Vertex"), Values("Output"), Values("%u32"),
             Values("OpCapability DrawParameters\n"),
             Values("OpExtension \"SPV_KHR_shader_draw_parameters\"\n"),
             Values("VUID-BaseInstance-BaseInstance-04182 "
@@ -1837,8 +1902,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     BaseInstanceOrVertexNotIntScalar,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("BaseInstance", "BaseVertex"), Values("Vertex"),
-            Values("Input"), Values("%f32", "%u32vec3"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("BaseInstance", "BaseVertex"),
+            Values("Vertex"), Values("Input"), Values("%f32", "%u32vec3"),
             Values("OpCapability DrawParameters\n"),
             Values("OpExtension \"SPV_KHR_shader_draw_parameters\"\n"),
             Values("VUID-BaseInstance-BaseInstance-04183 "
@@ -1850,8 +1915,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     DrawIndexSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("DrawIndex"), Values("Vertex"), Values("Input"),
-            Values("%u32"), Values("OpCapability DrawParameters\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("DrawIndex"), Values("Vertex"),
+            Values("Input"), Values("%u32"),
+            Values("OpCapability DrawParameters\n"),
             Values("OpExtension \"SPV_KHR_shader_draw_parameters\"\n"),
             Values(nullptr), Values(TestResult())));
 
@@ -1859,8 +1925,9 @@ INSTANTIATE_TEST_SUITE_P(
     DrawIndexMeshSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Combine(
-        Values("DrawIndex"), Values("MeshNV", "TaskNV"), Values("Input"),
-        Values("%u32"), Values("OpCapability MeshShadingNV\n"),
+        Values(SPV_ENV_VULKAN_1_0), Values("DrawIndex"),
+        Values("MeshNV", "TaskNV"), Values("Input"), Values("%u32"),
+        Values("OpCapability MeshShadingNV\n"),
         Values("OpExtension \"SPV_KHR_shader_draw_parameters\"\nOpExtension "
                "\"SPV_NV_mesh_shader\"\n"),
         Values(nullptr), Values(TestResult())));
@@ -1869,7 +1936,7 @@ INSTANTIATE_TEST_SUITE_P(
     DrawIndexInvalidExecutionModel,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Combine(
-        Values("DrawIndex"),
+        Values(SPV_ENV_VULKAN_1_0), Values("DrawIndex"),
         Values("Fragment", "GLCompute", "Geometry", "TessellationControl",
                "TessellationEvaluation"),
         Values("Input"), Values("%u32"),
@@ -1884,8 +1951,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     DrawIndexNotInput,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("DrawIndex"), Values("Vertex"), Values("Output"),
-            Values("%u32"), Values("OpCapability DrawParameters\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("DrawIndex"), Values("Vertex"),
+            Values("Output"), Values("%u32"),
+            Values("OpCapability DrawParameters\n"),
             Values("OpExtension \"SPV_KHR_shader_draw_parameters\"\n"),
             Values("VUID-DrawIndex-DrawIndex-04208"),
             Values(TestResult(SPV_ERROR_INVALID_DATA, "Vulkan spec allows",
@@ -1894,8 +1962,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     DrawIndexNotIntScalar,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("DrawIndex"), Values("Vertex"), Values("Input"),
-            Values("%f32", "%u32vec3"), Values("OpCapability DrawParameters\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("DrawIndex"), Values("Vertex"),
+            Values("Input"), Values("%f32", "%u32vec3"),
+            Values("OpCapability DrawParameters\n"),
             Values("OpExtension \"SPV_KHR_shader_draw_parameters\"\n"),
             Values("VUID-DrawIndex-DrawIndex-04209"),
             Values(TestResult(SPV_ERROR_INVALID_DATA,
@@ -1905,7 +1974,7 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     ViewIndexSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("ViewIndex"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("ViewIndex"),
             Values("Fragment", "Vertex", "Geometry", "TessellationControl",
                    "TessellationEvaluation"),
             Values("Input"), Values("%u32"), Values("OpCapability MultiView\n"),
@@ -1915,8 +1984,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     ViewIndexInvalidExecutionModel,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("ViewIndex"), Values("GLCompute"), Values("Input"),
-            Values("%u32"), Values("OpCapability MultiView\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("ViewIndex"),
+            Values("GLCompute"), Values("Input"), Values("%u32"),
+            Values("OpCapability MultiView\n"),
             Values("OpExtension \"SPV_KHR_multiview\"\n"),
             Values("VUID-ViewIndex-ViewIndex-04401"),
             Values(TestResult(
@@ -1926,8 +1996,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     ViewIndexNotInput,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("ViewIndex"), Values("Vertex"), Values("Output"),
-            Values("%u32"), Values("OpCapability MultiView\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("ViewIndex"), Values("Vertex"),
+            Values("Output"), Values("%u32"),
+            Values("OpCapability MultiView\n"),
             Values("OpExtension \"SPV_KHR_multiview\"\n"),
             Values("VUID-ViewIndex-ViewIndex-04402"),
             Values(TestResult(SPV_ERROR_INVALID_DATA, "Vulkan spec allows",
@@ -1936,8 +2007,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     ViewIndexNotIntScalar,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("ViewIndex"), Values("Vertex"), Values("Input"),
-            Values("%f32", "%u32vec3"), Values("OpCapability MultiView\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("ViewIndex"), Values("Vertex"),
+            Values("Input"), Values("%f32", "%u32vec3"),
+            Values("OpCapability MultiView\n"),
             Values("OpExtension \"SPV_KHR_multiview\"\n"),
             Values("VUID-ViewIndex-ViewIndex-04403"),
             Values(TestResult(SPV_ERROR_INVALID_DATA,
@@ -1947,7 +2019,7 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     DeviceIndexSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("DeviceIndex"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("DeviceIndex"),
             Values("Fragment", "Vertex", "Geometry", "TessellationControl",
                    "TessellationEvaluation", "GLCompute"),
             Values("Input"), Values("%u32"),
@@ -1958,9 +2030,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     DeviceIndexNotInput,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("DeviceIndex"), Values("Fragment", "Vertex", "GLCompute"),
-            Values("Output"), Values("%u32"),
-            Values("OpCapability DeviceGroup\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("DeviceIndex"),
+            Values("Fragment", "Vertex", "GLCompute"), Values("Output"),
+            Values("%u32"), Values("OpCapability DeviceGroup\n"),
             Values("OpExtension \"SPV_KHR_device_group\"\n"),
             Values("VUID-DeviceIndex-DeviceIndex-04205"),
             Values(TestResult(SPV_ERROR_INVALID_DATA, "Vulkan spec allows",
@@ -1969,9 +2041,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     DeviceIndexNotIntScalar,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("DeviceIndex"), Values("Fragment", "Vertex", "GLCompute"),
-            Values("Input"), Values("%f32", "%u32vec3"),
-            Values("OpCapability DeviceGroup\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("DeviceIndex"),
+            Values("Fragment", "Vertex", "GLCompute"), Values("Input"),
+            Values("%f32", "%u32vec3"), Values("OpCapability DeviceGroup\n"),
             Values("OpExtension \"SPV_KHR_device_group\"\n"),
             Values("VUID-DeviceIndex-DeviceIndex-04206"),
             Values(TestResult(SPV_ERROR_INVALID_DATA,
@@ -2447,11 +2519,31 @@ INSTANTIATE_TEST_SUITE_P(
     RayTSuccess,
     ValidateGenericCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Combine(Values(SPV_ENV_VULKAN_1_2), Values("RayTmaxKHR", "RayTminKHR"),
-            Values("AnyHitKHR", "ClosestHitKHR", "IntersectionKHR", "MissKHR"),
-            Values("Input"), Values("%f32"),
+            Values("AnyHitKHR", "ClosestHitKHR", "MissKHR"), Values("Input"),
+            Values("%f32"), Values("OpCapability RayTracingKHR\n"),
+            Values("OpExtension \"SPV_KHR_ray_tracing\"\n"), Values(nullptr),
+            Values(TestResult())));
+
+INSTANTIATE_TEST_SUITE_P(
+    RayTminIntersectionSuccess,
+    ValidateGenericCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
+    Combine(Values(SPV_ENV_VULKAN_1_2), Values("RayTminKHR"),
+            Values("IntersectionKHR"), Values("Input"), Values("%f32"),
             Values("OpCapability RayTracingKHR\n"),
             Values("OpExtension \"SPV_KHR_ray_tracing\"\n"), Values(nullptr),
             Values(TestResult())));
+
+// VUID-StandaloneSpirv-VulkanMemoryModel-04678 singles out RayTmaxKHR in an
+// intersection shader, so it needs the Vulkan memory model to be valid here.
+INSTANTIATE_TEST_SUITE_P(
+    RayTmaxIntersectionSuccess,
+    ValidateGenericCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
+    Combine(
+        Values(SPV_ENV_VULKAN_1_2), Values("RayTmaxKHR"),
+        Values("IntersectionKHR"), Values("Input"), Values("%f32"),
+        Values("OpCapability RayTracingKHR\nOpCapability VulkanMemoryModel\n"),
+        Values("OpExtension \"SPV_KHR_ray_tracing\"\n"), Values(nullptr),
+        Values(TestResult())));
 
 INSTANTIATE_TEST_SUITE_P(
     RayTNotExecutionMode,
@@ -2645,7 +2737,7 @@ CodeGenerator GetArrayedVariableCodeGenerator(const char* const built_in,
   entry_point.interfaces = "%built_in_var";
   // Any kind of reference would do.
   entry_point.body = R"(
-%val = OpBitcast %u32 %built_in_var
+%val = OpCopyObject %built_in_ptr %built_in_var
 )";
 
   std::ostringstream execution_modes;
@@ -2663,7 +2755,11 @@ CodeGenerator GetArrayedVariableCodeGenerator(const char* const built_in,
     execution_modes << "OpExecutionMode %" << entry_point.name
                     << " OutputPoints\n";
   }
-  if (0 == std::strcmp(execution_model, "GLCompute")) {
+  if (0 == std::strcmp(execution_model, "GLCompute") ||
+      0 == std::strcmp(execution_model, "MeshEXT") ||
+      0 == std::strcmp(execution_model, "MeshNV") ||
+      0 == std::strcmp(execution_model, "MeshEXT") ||
+      0 == std::strcmp(execution_model, "TaskNV")) {
     execution_modes << "OpExecutionMode %" << entry_point.name
                     << " LocalSize 1 1 1\n";
   }
@@ -2776,7 +2872,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     SMBuiltinsInputSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("SMCountNV", "SMIDNV", "WarpsPerSMNV", "WarpIDNV"),
+    Combine(Values(SPV_ENV_VULKAN_1_0),
+            Values("SMCountNV", "SMIDNV", "WarpsPerSMNV", "WarpIDNV"),
             Values("Vertex", "Fragment", "TessellationControl",
                    "TessellationEvaluation", "Geometry", "GLCompute"),
             Values("Input"), Values("%u32"),
@@ -2787,31 +2884,59 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     SMBuiltinsInputMeshSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(
-        Values("SMCountNV", "SMIDNV", "WarpsPerSMNV", "WarpIDNV"),
-        Values("MeshNV", "TaskNV"), Values("Input"), Values("%u32"),
-        Values("OpCapability ShaderSMBuiltinsNV\nOpCapability MeshShadingNV\n"),
-        Values("OpExtension \"SPV_NV_shader_sm_builtins\"\nOpExtension "
-               "\"SPV_NV_mesh_shader\"\n"),
-        Values(nullptr), Values(TestResult())));
+    Combine(Values(SPV_ENV_VULKAN_1_0),
+            Values("SMCountNV", "SMIDNV", "WarpsPerSMNV", "WarpIDNV"),
+            Values("MeshNV", "TaskNV"), Values("Input"), Values("%u32"),
+            Values("OpCapability ShaderSMBuiltinsNV\nOpCapability "
+                   "MeshShadingNV\n"),
+            Values("OpExtension \"SPV_NV_shader_sm_builtins\"\nOpExtension "
+                   "\"SPV_NV_mesh_shader\"\n"),
+            Values(nullptr), Values(TestResult())));
 
 INSTANTIATE_TEST_SUITE_P(
     SMBuiltinsInputRaySuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(
-        Values("SMCountNV", "SMIDNV", "WarpsPerSMNV", "WarpIDNV"),
-        Values("RayGenerationNV", "IntersectionNV", "AnyHitNV", "ClosestHitNV",
-               "MissNV", "CallableNV"),
-        Values("Input"), Values("%u32"),
-        Values("OpCapability ShaderSMBuiltinsNV\nOpCapability RayTracingNV\n"),
-        Values("OpExtension \"SPV_NV_shader_sm_builtins\"\nOpExtension "
-               "\"SPV_NV_ray_tracing\"\n"),
-        Values(nullptr), Values(TestResult())));
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("SMCountNV", "WarpsPerSMNV"),
+            Values("RayGenerationNV", "IntersectionNV", "AnyHitNV",
+                   "ClosestHitNV", "MissNV", "CallableNV"),
+            Values("Input"), Values("%u32"),
+            Values("OpCapability ShaderSMBuiltinsNV\nOpCapability "
+                   "RayTracingNV\n"),
+            Values("OpExtension \"SPV_NV_shader_sm_builtins\"\nOpExtension "
+                   "\"SPV_NV_ray_tracing\"\n"),
+            Values(nullptr), Values(TestResult())));
+
+// VUID-StandaloneSpirv-VulkanMemoryModel-04678 lists SMIDNV and WarpIDNV, but
+// not the any-hit shader, so those need the Vulkan memory model to be valid.
+INSTANTIATE_TEST_SUITE_P(
+    SMBuiltinsInputRayVolatileSuccess,
+    ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
+    Combine(Values(SPV_ENV_VULKAN_1_2), Values("SMIDNV", "WarpIDNV"),
+            Values("RayGenerationNV", "IntersectionNV", "ClosestHitNV",
+                   "MissNV", "CallableNV"),
+            Values("Input"), Values("%u32"),
+            Values("OpCapability ShaderSMBuiltinsNV\nOpCapability "
+                   "RayTracingNV\nOpCapability VulkanMemoryModel\n"),
+            Values("OpExtension \"SPV_NV_shader_sm_builtins\"\nOpExtension "
+                   "\"SPV_NV_ray_tracing\"\n"),
+            Values(nullptr), Values(TestResult())));
+
+INSTANTIATE_TEST_SUITE_P(
+    SMBuiltinsInputAnyHitSuccess,
+    ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("SMIDNV", "WarpIDNV"),
+            Values("AnyHitNV"), Values("Input"), Values("%u32"),
+            Values("OpCapability ShaderSMBuiltinsNV\nOpCapability "
+                   "RayTracingNV\n"),
+            Values("OpExtension \"SPV_NV_shader_sm_builtins\"\nOpExtension "
+                   "\"SPV_NV_ray_tracing\"\n"),
+            Values(nullptr), Values(TestResult())));
 
 INSTANTIATE_TEST_SUITE_P(
     SMBuiltinsNotInput,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("SMCountNV", "SMIDNV", "WarpsPerSMNV", "WarpIDNV"),
+    Combine(Values(SPV_ENV_VULKAN_1_0),
+            Values("SMCountNV", "SMIDNV", "WarpsPerSMNV", "WarpIDNV"),
             Values("Vertex", "Fragment", "TessellationControl",
                    "TessellationEvaluation", "Geometry", "GLCompute"),
             Values("Output"), Values("%u32"),
@@ -2826,7 +2951,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     SMBuiltinsNotIntScalar,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("SMCountNV", "SMIDNV", "WarpsPerSMNV", "WarpIDNV"),
+    Combine(Values(SPV_ENV_VULKAN_1_0),
+            Values("SMCountNV", "SMIDNV", "WarpsPerSMNV", "WarpIDNV"),
             Values("Vertex", "Fragment", "TessellationControl",
                    "TessellationEvaluation", "Geometry", "GLCompute"),
             Values("Input"), Values("%f32", "%u32vec3"),
@@ -2840,7 +2966,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     SMBuiltinsNotInt32,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("SMCountNV", "SMIDNV", "WarpsPerSMNV", "WarpIDNV"),
+    Combine(Values(SPV_ENV_VULKAN_1_0),
+            Values("SMCountNV", "SMIDNV", "WarpsPerSMNV", "WarpIDNV"),
             Values("Vertex", "Fragment", "TessellationControl",
                    "TessellationEvaluation", "Geometry", "GLCompute"),
             Values("Input"), Values("%u64"),
@@ -2854,7 +2981,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     ArmCoreBuiltinsInputSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("CoreIDARM", "CoreCountARM", "CoreMaxIDARM", "WarpIDARM",
+    Combine(Values(SPV_ENV_VULKAN_1_0),
+            Values("CoreIDARM", "CoreCountARM", "CoreMaxIDARM", "WarpIDARM",
                    "WarpMaxIDARM"),
             Values("Vertex", "Fragment", "TessellationControl",
                    "TessellationEvaluation", "Geometry", "GLCompute"),
@@ -2866,7 +2994,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     ArmCoreBuiltinsNotInput,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("CoreIDARM", "CoreCountARM", "CoreMaxIDARM", "WarpIDARM",
+    Combine(Values(SPV_ENV_VULKAN_1_0),
+            Values("CoreIDARM", "CoreCountARM", "CoreMaxIDARM", "WarpIDARM",
                    "WarpMaxIDARM"),
             Values("Vertex", "Fragment", "TessellationControl",
                    "TessellationEvaluation", "Geometry", "GLCompute"),
@@ -2881,7 +3010,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     ArmCoreBuiltinsNotIntScalar,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("CoreIDARM", "CoreCountARM", "CoreMaxIDARM", "WarpIDARM",
+    Combine(Values(SPV_ENV_VULKAN_1_0),
+            Values("CoreIDARM", "CoreCountARM", "CoreMaxIDARM", "WarpIDARM",
                    "WarpMaxIDARM"),
             Values("Vertex", "Fragment", "TessellationControl",
                    "TessellationEvaluation", "Geometry", "GLCompute"),
@@ -2895,7 +3025,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     ArmCoreBuiltinsNotInt32,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("CoreIDARM", "CoreCountARM", "CoreMaxIDARM", "WarpIDARM",
+    Combine(Values(SPV_ENV_VULKAN_1_0),
+            Values("CoreIDARM", "CoreCountARM", "CoreMaxIDARM", "WarpIDARM",
                    "WarpMaxIDARM"),
             Values("Vertex", "Fragment", "TessellationControl",
                    "TessellationEvaluation", "Geometry", "GLCompute"),
@@ -3575,6 +3706,7 @@ OpDecorate %gl_ViewportIndex PerPrimitiveNV
   EntryPoint entry_point;
   entry_point.name = "main_d_r";
   entry_point.execution_model = "MeshNV";
+  entry_point.execution_modes = "OpExecutionMode %main_d_r LocalSize 1 1 1";
   entry_point.interfaces = "%gl_PrimitiveID %gl_Layer %gl_ViewportIndex";
   generator.entry_points_.push_back(std::move(entry_point));
 
@@ -3613,7 +3745,9 @@ OpDecorate %gl_ViewportIndex PerPrimitiveNV
   EntryPoint entry_point;
   entry_point.name = "main_d_r";
   entry_point.execution_model = "MeshNV";
+  entry_point.execution_modes = "OpExecutionMode %main_d_r LocalSize 1 1 1";
   entry_point.interfaces = "%gl_PrimitiveID %gl_Layer %gl_ViewportIndex";
+  entry_point.body = "%ref_load = OpLoad %_arr_float_uint_81 %gl_PrimitiveID";
   generator.entry_points_.push_back(std::move(entry_point));
 
   CompileSuccessfully(generator.Build(), SPV_ENV_VULKAN_1_1);
@@ -3919,8 +4053,8 @@ OpDecorate %wg_var BuiltIn Position
 INSTANTIATE_TEST_SUITE_P(
     PrimitiveShadingRateOutputSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("PrimitiveShadingRateKHR"), Values("Vertex", "Geometry"),
-            Values("Output"), Values("%u32"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("PrimitiveShadingRateKHR"),
+            Values("Vertex", "Geometry"), Values("Output"), Values("%u32"),
             Values("OpCapability FragmentShadingRateKHR\n"),
             Values("OpExtension \"SPV_KHR_fragment_shading_rate\"\n"),
             Values(nullptr), Values(TestResult())));
@@ -3928,8 +4062,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     PrimitiveShadingRateMeshOutputSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("PrimitiveShadingRateKHR"), Values("MeshNV"),
-            Values("Output"), Values("%u32"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("PrimitiveShadingRateKHR"),
+            Values("MeshNV"), Values("Output"), Values("%u32"),
             Values("OpCapability FragmentShadingRateKHR\nOpCapability "
                    "MeshShadingNV\n"),
             Values("OpExtension \"SPV_KHR_fragment_shading_rate\"\nOpExtension "
@@ -3940,21 +4074,24 @@ INSTANTIATE_TEST_SUITE_P(
     PrimitiveShadingRateInvalidExecutionModel,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Combine(
-        Values("PrimitiveShadingRateKHR"), Values("Fragment"), Values("Output"),
-        Values("%u32"), Values("OpCapability FragmentShadingRateKHR\n"),
+        Values(SPV_ENV_VULKAN_1_0), Values("PrimitiveShadingRateKHR"),
+        Values("Fragment"), Values("Output"), Values("%u32"),
+        Values("OpCapability FragmentShadingRateKHR\n"),
         Values("OpExtension \"SPV_KHR_fragment_shading_rate\"\n"),
         Values("VUID-PrimitiveShadingRateKHR-PrimitiveShadingRateKHR-04484 "),
         Values(TestResult(
             SPV_ERROR_INVALID_DATA,
             "Vulkan spec allows BuiltIn PrimitiveShadingRateKHR to be used "
-            "only with Vertex, Geometry, or MeshNV execution models."))));
+            "only with Vertex, Geometry, MeshNV or MeshEXT execution "
+            "models."))));
 
 INSTANTIATE_TEST_SUITE_P(
     PrimitiveShadingRateInvalidStorageClass,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Combine(
-        Values("PrimitiveShadingRateKHR"), Values("Vertex"), Values("Input"),
-        Values("%u32"), Values("OpCapability FragmentShadingRateKHR\n"),
+        Values(SPV_ENV_VULKAN_1_0), Values("PrimitiveShadingRateKHR"),
+        Values("Vertex"), Values("Input"), Values("%u32"),
+        Values("OpCapability FragmentShadingRateKHR\n"),
         Values("OpExtension \"SPV_KHR_fragment_shading_rate\"\n"),
         Values("VUID-PrimitiveShadingRateKHR-PrimitiveShadingRateKHR-04485 "),
         Values(TestResult(
@@ -3966,8 +4103,9 @@ INSTANTIATE_TEST_SUITE_P(
     PrimitiveShadingRateInvalidType,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Combine(
-        Values("PrimitiveShadingRateKHR"), Values("Vertex"), Values("Output"),
-        Values("%f32"), Values("OpCapability FragmentShadingRateKHR\n"),
+        Values(SPV_ENV_VULKAN_1_0), Values("PrimitiveShadingRateKHR"),
+        Values("Vertex"), Values("Output"), Values("%f32"),
+        Values("OpCapability FragmentShadingRateKHR\n"),
         Values("OpExtension \"SPV_KHR_fragment_shading_rate\"\n"),
         Values("VUID-PrimitiveShadingRateKHR-PrimitiveShadingRateKHR-04486 "),
         Values(TestResult(
@@ -3978,16 +4116,18 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     ShadingRateInputSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("ShadingRateKHR"), Values("Fragment"), Values("Input"),
-            Values("%u32"), Values("OpCapability FragmentShadingRateKHR\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("ShadingRateKHR"),
+            Values("Fragment"), Values("Input"), Values("%u32"),
+            Values("OpCapability FragmentShadingRateKHR\n"),
             Values("OpExtension \"SPV_KHR_fragment_shading_rate\"\n"),
             Values(nullptr), Values(TestResult())));
 
 INSTANTIATE_TEST_SUITE_P(
     ShadingRateInvalidExecutionModel,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("ShadingRateKHR"), Values("Vertex"), Values("Input"),
-            Values("%u32"), Values("OpCapability FragmentShadingRateKHR\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("ShadingRateKHR"),
+            Values("Vertex"), Values("Input"), Values("%u32"),
+            Values("OpCapability FragmentShadingRateKHR\n"),
             Values("OpExtension \"SPV_KHR_fragment_shading_rate\"\n"),
             Values("VUID-ShadingRateKHR-ShadingRateKHR-04490 "),
             Values(TestResult(
@@ -3998,8 +4138,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     ShadingRateInvalidStorageClass,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("ShadingRateKHR"), Values("Fragment"), Values("Output"),
-            Values("%u32"), Values("OpCapability FragmentShadingRateKHR\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("ShadingRateKHR"),
+            Values("Fragment"), Values("Output"), Values("%u32"),
+            Values("OpCapability FragmentShadingRateKHR\n"),
             Values("OpExtension \"SPV_KHR_fragment_shading_rate\"\n"),
             Values("VUID-ShadingRateKHR-ShadingRateKHR-04491 "),
             Values(TestResult(
@@ -4011,8 +4152,9 @@ INSTANTIATE_TEST_SUITE_P(
     ShadingRateInvalidType,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Combine(
-        Values("ShadingRateKHR"), Values("Fragment"), Values("Input"),
-        Values("%f32"), Values("OpCapability FragmentShadingRateKHR\n"),
+        Values(SPV_ENV_VULKAN_1_0), Values("ShadingRateKHR"),
+        Values("Fragment"), Values("Input"), Values("%f32"),
+        Values("OpCapability FragmentShadingRateKHR\n"),
         Values("OpExtension \"SPV_KHR_fragment_shading_rate\"\n"),
         Values("VUID-ShadingRateKHR-ShadingRateKHR-04492 "),
         Values(TestResult(SPV_ERROR_INVALID_DATA,
@@ -4022,8 +4164,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     FragInvocationCountInputSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FragInvocationCountEXT"), Values("Fragment"),
-            Values("Input"), Values("%u32"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FragInvocationCountEXT"),
+            Values("Fragment"), Values("Input"), Values("%u32"),
             Values("OpCapability FragmentDensityEXT\n"),
             Values("OpExtension \"SPV_EXT_fragment_invocation_density\"\n"),
             Values(nullptr), Values(TestResult())));
@@ -4032,8 +4174,9 @@ INSTANTIATE_TEST_SUITE_P(
     FragInvocationCountInvalidExecutionModel,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Combine(
-        Values("FragInvocationCountEXT"), Values("Vertex"), Values("Input"),
-        Values("%u32"), Values("OpCapability FragmentDensityEXT\n"),
+        Values(SPV_ENV_VULKAN_1_0), Values("FragInvocationCountEXT"),
+        Values("Vertex"), Values("Input"), Values("%u32"),
+        Values("OpCapability FragmentDensityEXT\n"),
         Values("OpExtension \"SPV_EXT_fragment_invocation_density\"\n"),
         Values("VUID-FragInvocationCountEXT-FragInvocationCountEXT-04217"),
         Values(TestResult(SPV_ERROR_INVALID_DATA,
@@ -4043,8 +4186,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     FragInvocationCountInvalidStorageClass,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FragInvocationCountEXT"), Values("Fragment"),
-            Values("Output"), Values("%u32"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FragInvocationCountEXT"),
+            Values("Fragment"), Values("Output"), Values("%u32"),
             Values("OpCapability FragmentDensityEXT\n"),
             Values("OpExtension \"SPV_EXT_fragment_invocation_density\"\n"),
             Values("VUID-FragInvocationCountEXT-FragInvocationCountEXT-04218"),
@@ -4056,8 +4199,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     FragInvocationCountInvalidType,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FragInvocationCountEXT"), Values("Fragment"),
-            Values("Input"), Values("%f32"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FragInvocationCountEXT"),
+            Values("Fragment"), Values("Input"), Values("%f32"),
             Values("OpCapability FragmentDensityEXT\n"),
             Values("OpExtension \"SPV_EXT_fragment_invocation_density\"\n"),
             Values("VUID-FragInvocationCountEXT-FragInvocationCountEXT-04219"),
@@ -4069,16 +4212,18 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     FragSizeInputSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FragSizeEXT"), Values("Fragment"), Values("Input"),
-            Values("%u32vec2"), Values("OpCapability FragmentDensityEXT\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FragSizeEXT"),
+            Values("Fragment"), Values("Input"), Values("%u32vec2"),
+            Values("OpCapability FragmentDensityEXT\n"),
             Values("OpExtension \"SPV_EXT_fragment_invocation_density\"\n"),
             Values(nullptr), Values(TestResult())));
 
 INSTANTIATE_TEST_SUITE_P(
     FragSizeInvalidExecutionModel,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FragSizeEXT"), Values("Vertex"), Values("Input"),
-            Values("%u32vec2"), Values("OpCapability FragmentDensityEXT\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FragSizeEXT"), Values("Vertex"),
+            Values("Input"), Values("%u32vec2"),
+            Values("OpCapability FragmentDensityEXT\n"),
             Values("OpExtension \"SPV_EXT_fragment_invocation_density\"\n"),
             Values("VUID-FragSizeEXT-FragSizeEXT-04220"),
             Values(TestResult(SPV_ERROR_INVALID_DATA,
@@ -4089,8 +4234,9 @@ INSTANTIATE_TEST_SUITE_P(
     FragSizeInvalidStorageClass,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Combine(
-        Values("FragSizeEXT"), Values("Fragment"), Values("Output"),
-        Values("%u32vec2"), Values("OpCapability FragmentDensityEXT\n"),
+        Values(SPV_ENV_VULKAN_1_0), Values("FragSizeEXT"), Values("Fragment"),
+        Values("Output"), Values("%u32vec2"),
+        Values("OpCapability FragmentDensityEXT\n"),
         Values("OpExtension \"SPV_EXT_fragment_invocation_density\"\n"),
         Values("VUID-FragSizeEXT-FragSizeEXT-04221"),
         Values(TestResult(SPV_ERROR_INVALID_DATA,
@@ -4100,8 +4246,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     FragSizeInvalidType,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FragSizeEXT"), Values("Fragment"), Values("Input"),
-            Values("%u32vec3"), Values("OpCapability FragmentDensityEXT\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FragSizeEXT"),
+            Values("Fragment"), Values("Input"), Values("%u32vec3"),
+            Values("OpCapability FragmentDensityEXT\n"),
             Values("OpExtension \"SPV_EXT_fragment_invocation_density\"\n"),
             Values("VUID-FragSizeEXT-FragSizeEXT-04222"),
             Values(TestResult(
@@ -4112,16 +4259,18 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     FragStencilRefOutputSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FragStencilRefEXT"), Values("Fragment"), Values("Output"),
-            Values("%u32", "%u64"), Values("OpCapability StencilExportEXT\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FragStencilRefEXT"),
+            Values("Fragment"), Values("Output"), Values("%u32", "%u64"),
+            Values("OpCapability StencilExportEXT\n"),
             Values("OpExtension \"SPV_EXT_shader_stencil_export\"\n"),
             Values(nullptr), Values(TestResult())));
 
 INSTANTIATE_TEST_SUITE_P(
     FragStencilRefInvalidExecutionModel,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FragStencilRefEXT"), Values("Vertex"), Values("Output"),
-            Values("%u32", "%u64"), Values("OpCapability StencilExportEXT\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FragStencilRefEXT"),
+            Values("Vertex"), Values("Output"), Values("%u32", "%u64"),
+            Values("OpCapability StencilExportEXT\n"),
             Values("OpExtension \"SPV_EXT_shader_stencil_export\"\n"),
             Values("VUID-FragStencilRefEXT-FragStencilRefEXT-04223"),
             Values(TestResult(SPV_ERROR_INVALID_DATA,
@@ -4131,8 +4280,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     FragStencilRefInvalidStorageClass,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FragStencilRefEXT"), Values("Fragment"), Values("Input"),
-            Values("%u32", "%u64"), Values("OpCapability StencilExportEXT\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FragStencilRefEXT"),
+            Values("Fragment"), Values("Input"), Values("%u32", "%u64"),
+            Values("OpCapability StencilExportEXT\n"),
             Values("OpExtension \"SPV_EXT_shader_stencil_export\"\n"),
             Values("VUID-FragStencilRefEXT-FragStencilRefEXT-04224"),
             Values(TestResult(
@@ -4143,7 +4293,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     FragStencilRefInvalidType,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FragStencilRefEXT"), Values("Fragment"), Values("Output"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FragStencilRefEXT"),
+            Values("Fragment"), Values("Output"),
             Values("%f32", "%f64", "%u32vec2"),
             Values("OpCapability StencilExportEXT\n"),
             Values("OpExtension \"SPV_EXT_shader_stencil_export\"\n"),
@@ -4156,16 +4307,18 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     FullyCoveredEXTInputSuccess,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FullyCoveredEXT"), Values("Fragment"), Values("Input"),
-            Values("%bool"), Values("OpCapability FragmentFullyCoveredEXT\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FullyCoveredEXT"),
+            Values("Fragment"), Values("Input"), Values("%bool"),
+            Values("OpCapability FragmentFullyCoveredEXT\n"),
             Values("OpExtension \"SPV_EXT_fragment_fully_covered\"\n"),
             Values(nullptr), Values(TestResult())));
 
 INSTANTIATE_TEST_SUITE_P(
     FullyCoveredEXTInvalidExecutionModel,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FullyCoveredEXT"), Values("Vertex"), Values("Input"),
-            Values("%bool"), Values("OpCapability FragmentFullyCoveredEXT\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FullyCoveredEXT"),
+            Values("Vertex"), Values("Input"), Values("%bool"),
+            Values("OpCapability FragmentFullyCoveredEXT\n"),
             Values("OpExtension \"SPV_EXT_fragment_fully_covered\"\n"),
             Values("VUID-FullyCoveredEXT-FullyCoveredEXT-04232"),
             Values(TestResult(SPV_ERROR_INVALID_DATA,
@@ -4175,8 +4328,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     FullyCoveredEXTInvalidStorageClass,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FullyCoveredEXT"), Values("Fragment"), Values("Output"),
-            Values("%bool"), Values("OpCapability FragmentFullyCoveredEXT\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FullyCoveredEXT"),
+            Values("Fragment"), Values("Output"), Values("%bool"),
+            Values("OpCapability FragmentFullyCoveredEXT\n"),
             Values("OpExtension \"SPV_EXT_fragment_fully_covered\"\n"),
             Values("VUID-FullyCoveredEXT-FullyCoveredEXT-04233"),
             Values(TestResult(
@@ -4187,8 +4341,9 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     FullyCoveredEXTInvalidType,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("FullyCoveredEXT"), Values("Fragment"), Values("Input"),
-            Values("%f32"), Values("OpCapability FragmentFullyCoveredEXT\n"),
+    Combine(Values(SPV_ENV_VULKAN_1_0), Values("FullyCoveredEXT"),
+            Values("Fragment"), Values("Input"), Values("%f32"),
+            Values("OpCapability FragmentFullyCoveredEXT\n"),
             Values("OpExtension \"SPV_EXT_fragment_fully_covered\"\n"),
             Values("VUID-FullyCoveredEXT-FullyCoveredEXT-04234"),
             Values(TestResult(
@@ -4200,6 +4355,7 @@ INSTANTIATE_TEST_SUITE_P(
     BaryCoordNotFragment,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Combine(
+        Values(SPV_ENV_VULKAN_1_0),
         Values("BaryCoordKHR", "BaryCoordNoPerspKHR"), Values("Vertex"),
         Values("Input"), Values("%f32vec3"),
         Values("OpCapability FragmentBarycentricKHR\n"),
@@ -4212,7 +4368,8 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     BaryCoordNotInput,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
-    Combine(Values("BaryCoordKHR", "BaryCoordNoPerspKHR"), Values("Fragment"),
+    Combine(Values(SPV_ENV_VULKAN_1_0),
+            Values("BaryCoordKHR", "BaryCoordNoPerspKHR"), Values("Fragment"),
             Values("Output"), Values("%f32vec3"),
             Values("OpCapability FragmentBarycentricKHR\n"),
             Values("OpExtension \"SPV_KHR_fragment_shader_barycentric\"\n"),
@@ -4226,6 +4383,7 @@ INSTANTIATE_TEST_SUITE_P(
     BaryCoordNotFloatVector,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Combine(
+        Values(SPV_ENV_VULKAN_1_0),
         Values("BaryCoordKHR", "BaryCoordNoPerspKHR"), Values("Fragment"),
         Values("Output"), Values("%f32arr3", "%u32vec4"),
         Values("OpCapability FragmentBarycentricKHR\n"),
@@ -4239,6 +4397,7 @@ INSTANTIATE_TEST_SUITE_P(
     BaryCoordNotFloatVec3,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Combine(
+        Values(SPV_ENV_VULKAN_1_0),
         Values("BaryCoordKHR", "BaryCoordNoPerspKHR"), Values("Fragment"),
         Values("Output"), Values("%f32vec2"),
         Values("OpCapability FragmentBarycentricKHR\n"),
@@ -4252,6 +4411,7 @@ INSTANTIATE_TEST_SUITE_P(
     BaryCoordNotF32Vec3,
     ValidateVulkanCombineBuiltInExecutionModelDataTypeCapabilityExtensionResult,
     Combine(
+        Values(SPV_ENV_VULKAN_1_0),
         Values("BaryCoordKHR", "BaryCoordNoPerspKHR"), Values("Fragment"),
         Values("Output"), Values("%f64vec3"),
         Values("OpCapability FragmentBarycentricKHR\n"),
@@ -4323,6 +4483,29 @@ TEST_F(ValidateBuiltIns, VulkanPrimitiveTriangleIndicesEXTSuccess) {
           .c_str(),
       SPV_ENV_VULKAN_1_2);
   EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+}
+
+TEST_F(ValidateBuiltIns,
+       VulkanPrimitiveTriangleIndicesEXTInvalidExecutionMode) {
+  const std::string declarations = R"(
+%array = OpTypeArray %v3uint %uint_16
+%array_ptr = OpTypePointer Output %array
+%var = OpVariable %array_ptr Output
+%ptr = OpTypePointer Output %v3uint
+)";
+  const std::string body = R"(
+%access = OpAccessChain %ptr %var %int_0
+)";
+
+  CompileSuccessfully(
+      GenerateMeshShadingCode("PrimitiveTriangleIndicesEXT", "OutputPoints",
+                              body, declarations)
+          .c_str(),
+      SPV_ENV_VULKAN_1_2);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-PrimitiveTriangleIndicesEXT-"
+                      "PrimitiveTriangleIndicesEXT-07054"));
 }
 
 TEST_F(ValidateBuiltIns, VulkanPrimitiveTriangleIndicesEXTStorageClass) {
@@ -4408,6 +4591,28 @@ TEST_F(ValidateBuiltIns, VulkanPrimitiveLineIndicesEXTSuccess) {
   EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_2));
 }
 
+TEST_F(ValidateBuiltIns, VulkanPrimitiveLineIndicesEXTInvalidExecutionMode) {
+  const std::string declarations = R"(
+  %array = OpTypeArray %v2uint %uint_16
+  %array_ptr = OpTypePointer Output %array
+  %var = OpVariable %array_ptr Output
+  %ptr = OpTypePointer Output %v2uint
+  )";
+  const std::string body = R"(
+  %access = OpAccessChain %ptr %var %int_0
+  )";
+
+  CompileSuccessfully(
+      GenerateMeshShadingCode("PrimitiveLineIndicesEXT", "OutputPoints", body,
+                              declarations)
+          .c_str(),
+      SPV_ENV_VULKAN_1_2);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      AnyVUID("VUID-PrimitiveLineIndicesEXT-PrimitiveLineIndicesEXT-07048"));
+}
+
 TEST_F(ValidateBuiltIns, VulkanPrimitiveLineIndicesEXTStorageClass) {
   const std::string declarations = R"(
 %array = OpTypeArray %v2uint %uint_16
@@ -4471,6 +4676,28 @@ TEST_F(ValidateBuiltIns, VulkanPrimitivePointIndicesEXTSuccess) {
   EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_2));
 }
 
+TEST_F(ValidateBuiltIns, VulkanPrimitivePointIndicesEXTInvalidExecutionMode) {
+  const std::string declarations = R"(
+    %array = OpTypeArray %uint %uint_16
+    %array_ptr = OpTypePointer Output %array
+    %var = OpVariable %array_ptr Output
+    %ptr = OpTypePointer Output %uint
+    )";
+  const std::string body = R"(
+    %access = OpAccessChain %ptr %var %int_0
+    )";
+
+  CompileSuccessfully(
+      GenerateMeshShadingCode("PrimitivePointIndicesEXT", "OutputTrianglesNV",
+                              body, declarations)
+          .c_str(),
+      SPV_ENV_VULKAN_1_2);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      AnyVUID("VUID-PrimitivePointIndicesEXT-PrimitivePointIndicesEXT-07042"));
+}
+
 TEST_F(ValidateBuiltIns, VulkanPrimitivePointIndicesEXTStorageClass) {
   const std::string declarations = R"(
 %array = OpTypeArray %uint %uint_16
@@ -4513,6 +4740,3342 @@ TEST_F(ValidateBuiltIns, VulkanPrimitivePointIndicesEXTType) {
   EXPECT_THAT(
       getDiagnosticString(),
       AnyVUID("VUID-PrimitivePointIndicesEXT-PrimitivePointIndicesEXT-07044"));
+}
+
+TEST_F(ValidateBuiltIns, VulkanBuiltinPrimtiveIDWithPerPrimitiveEXT) {
+  const std::string text = R"(
+               OpCapability MeshShadingEXT
+               OpCapability Shader
+               OpExtension "SPV_EXT_mesh_shader"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint MeshEXT %MainMesh "MainMesh" %gl_PrimitiveID
+               OpExecutionMode %MainMesh OutputPrimitivesNV 1
+               OpExecutionMode %MainMesh OutputVertices 3
+               OpExecutionMode %MainMesh OutputTrianglesNV
+               OpExecutionMode %MainMesh LocalSize 1 1 1
+               OpSource Slang 1
+               OpName %MainMesh "MainMesh"
+               OpDecorate %gl_PrimitiveID BuiltIn PrimitiveId
+               OpDecorate %gl_PrimitiveID PerPrimitiveNV
+       %void = OpTypeVoid
+          %9 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %uint_3 = OpConstant %uint 3
+     %uint_1 = OpConstant %uint 1
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+        %int = OpTypeInt 32 1
+      %int_1 = OpConstant %int 1
+      %int_3 = OpConstant %int 3
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+     %uint_0 = OpConstant %uint 0
+    %v3float = OpTypeVector %float 3
+%_ptr_Output_v3float = OpTypePointer Output %v3float
+     %v3uint = OpTypeVector %uint 3
+%_ptr_Output_v3uint = OpTypePointer Output %v3uint
+%_ptr_Output_int = OpTypePointer Output %int
+%_arr_int_int_1 = OpTypeArray %int %int_1
+%_ptr_Output__arr_int_int_1 = OpTypePointer Output %_arr_int_int_1
+%gl_PrimitiveID = OpVariable %_ptr_Output__arr_int_int_1 Output
+   %MainMesh = OpFunction %void None %9
+         %25 = OpLabel
+               OpSetMeshOutputsEXT %uint_3 %uint_1
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_2);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinPrimtiveIDWithPerPrimitiveEXT) {
+  const std::string text = R"(
+       OpCapability MeshShadingEXT
+       OpCapability Shader
+       OpExtension "SPV_EXT_mesh_shader"
+       OpMemoryModel Logical GLSL450
+       OpEntryPoint MeshEXT %MainMesh "MainMesh" %gl_PrimitiveID
+       OpExecutionMode %MainMesh OutputPrimitivesNV 1
+       OpExecutionMode %MainMesh OutputVertices 3
+       OpExecutionMode %MainMesh OutputTrianglesNV
+       OpExecutionMode %MainMesh LocalSize 1 1 1
+       OpSource Slang 1
+       OpName %MainMesh "MainMesh"
+       OpDecorate %gl_PrimitiveID BuiltIn PrimitiveId
+%void = OpTypeVoid
+  %9 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_3 = OpConstant %uint 3
+%uint_1 = OpConstant %uint 1
+%float = OpTypeFloat 32
+%v4float = OpTypeVector %float 4
+%int = OpTypeInt 32 1
+%int_1 = OpConstant %int 1
+%int_3 = OpConstant %int 3
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+%uint_0 = OpConstant %uint 0
+%v3float = OpTypeVector %float 3
+%_ptr_Output_v3float = OpTypePointer Output %v3float
+%v3uint = OpTypeVector %uint 3
+%_ptr_Output_v3uint = OpTypePointer Output %v3uint
+%_ptr_Output_int = OpTypePointer Output %int
+%_arr_int_int_1 = OpTypeArray %int %int_1
+%_ptr_Output__arr_int_int_1 = OpTypePointer Output %_arr_int_int_1
+%gl_PrimitiveID = OpVariable %_ptr_Output__arr_int_int_1 Output
+%MainMesh = OpFunction %void None %9
+ %25 = OpLabel
+%ref_load = OpLoad %_arr_int_int_1 %gl_PrimitiveID
+       OpSetMeshOutputsEXT %uint_3 %uint_1
+       OpReturn
+       OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_2);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-PrimitiveId-PrimitiveId-07040"));
+}
+
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinViewportIndexWithPerPrimitiveEXT) {
+  const std::string text = R"(
+     OpCapability MeshShadingEXT
+     OpCapability Shader
+     OpExtension "SPV_EXT_mesh_shader"
+     OpMemoryModel Logical GLSL450
+     OpEntryPoint MeshEXT %MainMesh "MainMesh" %gl_ViewportIndex
+     OpExecutionMode %MainMesh OutputPrimitivesNV 1
+     OpExecutionMode %MainMesh OutputVertices 3
+     OpExecutionMode %MainMesh OutputTrianglesNV
+     OpExecutionMode %MainMesh LocalSize 1 1 1
+     OpSource Slang 1
+     OpName %MainMesh "MainMesh"
+     OpDecorate %gl_ViewportIndex BuiltIn ViewportIndex
+%void = OpTypeVoid
+%9 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_3 = OpConstant %uint 3
+%uint_1 = OpConstant %uint 1
+%float = OpTypeFloat 32
+%int = OpTypeInt 32 1
+%int_1 = OpConstant %int 1
+%int_3 = OpConstant %int 3
+%uint_0 = OpConstant %uint 0
+%v3float = OpTypeVector %float 3
+%_ptr_Output_v3float = OpTypePointer Output %v3float
+%v3uint = OpTypeVector %uint 3
+%_ptr_Output_v3uint = OpTypePointer Output %v3uint
+%_ptr_Output_int = OpTypePointer Output %int
+%_arr_int_int_1 = OpTypeArray %int %int_1
+%_ptr_Output__arr_int_int_1 = OpTypePointer Output %_arr_int_int_1
+%gl_ViewportIndex = OpVariable %_ptr_Output__arr_int_int_1 Output
+%MainMesh = OpFunction %void None %9
+%25 = OpLabel
+%ref_load = OpLoad %_arr_int_int_1 %gl_ViewportIndex
+     OpSetMeshOutputsEXT %uint_3 %uint_1
+     OpReturn
+     OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_2);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-ViewportIndex-ViewportIndex-07060"));
+}
+
+TEST_F(ValidateBuiltIns, VulkanBuiltinPrimitivePointIndicesEXT) {
+  const std::string text = R"(
+       OpCapability MeshShadingEXT
+       OpExtension "SPV_EXT_mesh_shader"
+  %1 = OpExtInstImport "GLSL.std.450"
+       OpMemoryModel Logical GLSL450
+       OpEntryPoint MeshEXT %main "main" %gl_PrimitivePointIndicesEXT
+       OpExecutionMode %main LocalSize 32 1 1
+       OpExecutionMode %main OutputVertices 81
+       OpExecutionMode %main OutputPrimitivesEXT 32
+       OpExecutionMode %main OutputPoints
+       OpSource GLSL 460
+       OpSourceExtension "GL_EXT_mesh_shader"
+       OpName %main "main"
+       OpName %gl_PrimitivePointIndicesEXT "gl_PrimitivePointIndicesEXT"
+       OpDecorate %gl_PrimitivePointIndicesEXT BuiltIn PrimitivePointIndicesEXT
+       OpDecorate %gl_WorkGroupSize BuiltIn WorkgroupSize
+%void = OpTypeVoid
+  %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%_arr_uint_uint_32 = OpTypeArray %uint %uint_32
+%_ptr_Output__arr_uint_uint_32 = OpTypePointer Output %_arr_uint_uint_32
+%gl_PrimitivePointIndicesEXT = OpVariable %_ptr_Output__arr_uint_uint_32 Output
+%int = OpTypeInt 32 1
+%int_0 = OpConstant %int 0
+%uint_0 = OpConstant %uint 0
+%_ptr_Output_uint = OpTypePointer Output %uint
+%v3uint = OpTypeVector %uint 3
+%uint_1 = OpConstant %uint 1
+%gl_WorkGroupSize = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+%main = OpFunction %void None %3
+  %5 = OpLabel
+ %15 = OpAccessChain %_ptr_Output_uint %gl_PrimitivePointIndicesEXT %int_0
+       OpStore %15 %uint_0
+       OpReturn
+       OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_2);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+}
+
+TEST_F(ValidateBuiltIns, VulkanBuiltinPrimitiveLineIndicesEXT) {
+  const std::string text = R"(
+          OpCapability MeshShadingEXT
+          OpExtension "SPV_EXT_mesh_shader"
+     %1 = OpExtInstImport "GLSL.std.450"
+          OpMemoryModel Logical GLSL450
+          OpEntryPoint MeshEXT %main "main" %gl_PrimitiveLineIndicesEXT
+          OpExecutionMode %main LocalSize 32 1 1
+          OpExecutionMode %main OutputVertices 81
+          OpExecutionMode %main OutputPrimitivesEXT 32
+          OpExecutionMode %main OutputLinesEXT
+          OpSource GLSL 460
+          OpSourceExtension "GL_EXT_mesh_shader"
+          OpName %main "main"
+          OpName %gl_PrimitiveLineIndicesEXT "gl_PrimitiveLineIndicesEXT"
+          OpDecorate %gl_PrimitiveLineIndicesEXT BuiltIn PrimitiveLineIndicesEXT
+          OpDecorate %gl_WorkGroupSize BuiltIn WorkgroupSize
+  %void = OpTypeVoid
+     %3 = OpTypeFunction %void
+  %uint = OpTypeInt 32 0
+%v2uint = OpTypeVector %uint 2
+%uint_32 = OpConstant %uint 32
+%_arr_v2uint_uint_32 = OpTypeArray %v2uint %uint_32
+%_ptr_Output__arr_v2uint_uint_32 = OpTypePointer Output %_arr_v2uint_uint_32
+%gl_PrimitiveLineIndicesEXT = OpVariable %_ptr_Output__arr_v2uint_uint_32 Output
+   %int = OpTypeInt 32 1
+ %int_0 = OpConstant %int 0
+%uint_0 = OpConstant %uint 0
+    %15 = OpConstantComposite %v2uint %uint_0 %uint_0
+%_ptr_Output_v2uint = OpTypePointer Output %v2uint
+%v3uint = OpTypeVector %uint 3
+%uint_1 = OpConstant %uint 1
+%gl_WorkGroupSize = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+  %main = OpFunction %void None %3
+     %5 = OpLabel
+    %17 = OpAccessChain %_ptr_Output_v2uint %gl_PrimitiveLineIndicesEXT %int_0
+          OpStore %17 %15
+          OpReturn
+          OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_2);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinPrimitiveLineIndicesEXT) {
+  const std::string text = R"(
+          OpCapability MeshShadingEXT
+          OpExtension "SPV_EXT_mesh_shader"
+     %1 = OpExtInstImport "GLSL.std.450"
+          OpMemoryModel Logical GLSL450
+          OpEntryPoint MeshEXT %main "main" %gl_PrimitiveLineIndicesEXT
+          OpExecutionMode %main LocalSize 32 1 1
+          OpExecutionMode %main OutputVertices 81
+          OpExecutionMode %main OutputPrimitivesEXT 32
+          OpExecutionMode %main OutputPoints
+          OpSource GLSL 460
+          OpSourceExtension "GL_EXT_mesh_shader"
+          OpName %main "main"
+          OpName %gl_PrimitiveLineIndicesEXT "gl_PrimitiveLineIndicesEXT"
+          OpDecorate %gl_PrimitiveLineIndicesEXT BuiltIn PrimitiveLineIndicesEXT
+          OpDecorate %gl_WorkGroupSize BuiltIn WorkgroupSize
+  %void = OpTypeVoid
+     %3 = OpTypeFunction %void
+  %uint = OpTypeInt 32 0
+%v2uint = OpTypeVector %uint 2
+%uint_32 = OpConstant %uint 32
+%_arr_v2uint_uint_32 = OpTypeArray %v2uint %uint_32
+%_ptr_Output__arr_v2uint_uint_32 = OpTypePointer Output %_arr_v2uint_uint_32
+%gl_PrimitiveLineIndicesEXT = OpVariable %_ptr_Output__arr_v2uint_uint_32 Output
+   %int = OpTypeInt 32 1
+ %int_0 = OpConstant %int 0
+%uint_0 = OpConstant %uint 0
+    %15 = OpConstantComposite %v2uint %uint_0 %uint_0
+%_ptr_Output_v2uint = OpTypePointer Output %v2uint
+%v3uint = OpTypeVector %uint 3
+%uint_1 = OpConstant %uint 1
+%gl_WorkGroupSize = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+  %main = OpFunction %void None %3
+     %5 = OpLabel
+    %17 = OpAccessChain %_ptr_Output_v2uint %gl_PrimitiveLineIndicesEXT %int_0
+          OpStore %17 %15
+          OpReturn
+          OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_2);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      AnyVUID("VUID-PrimitiveLineIndicesEXT-PrimitiveLineIndicesEXT-07048"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinPrimitivePointIndicesEXT) {
+  const std::string text = R"(
+       OpCapability MeshShadingEXT
+       OpExtension "SPV_EXT_mesh_shader"
+  %1 = OpExtInstImport "GLSL.std.450"
+       OpMemoryModel Logical GLSL450
+       OpEntryPoint MeshEXT %main "main" %gl_PrimitivePointIndicesEXT
+       OpExecutionMode %main LocalSize 32 1 1
+       OpExecutionMode %main OutputVertices 81
+       OpExecutionMode %main OutputPrimitivesEXT 32
+       OpExecutionMode %main OutputTrianglesEXT
+       OpSource GLSL 460
+       OpSourceExtension "GL_EXT_mesh_shader"
+       OpName %main "main"
+       OpName %gl_PrimitivePointIndicesEXT "gl_PrimitivePointIndicesEXT"
+       OpDecorate %gl_PrimitivePointIndicesEXT BuiltIn PrimitivePointIndicesEXT
+       OpDecorate %gl_WorkGroupSize BuiltIn WorkgroupSize
+%void = OpTypeVoid
+  %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%_arr_uint_uint_32 = OpTypeArray %uint %uint_32
+%_ptr_Output__arr_uint_uint_32 = OpTypePointer Output %_arr_uint_uint_32
+%gl_PrimitivePointIndicesEXT = OpVariable %_ptr_Output__arr_uint_uint_32 Output
+%int = OpTypeInt 32 1
+%int_0 = OpConstant %int 0
+%uint_0 = OpConstant %uint 0
+%_ptr_Output_uint = OpTypePointer Output %uint
+%v3uint = OpTypeVector %uint 3
+%uint_1 = OpConstant %uint 1
+%gl_WorkGroupSize = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+%main = OpFunction %void None %3
+  %5 = OpLabel
+ %15 = OpAccessChain %_ptr_Output_uint %gl_PrimitivePointIndicesEXT %int_0
+       OpStore %15 %uint_0
+       OpReturn
+       OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_2);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      AnyVUID("VUID-PrimitivePointIndicesEXT-PrimitivePointIndicesEXT-07042"));
+}
+
+TEST_F(ValidateBuiltIns, VulkanBuiltinPrimitiveTriangleIndicesEXT) {
+  const std::string text = R"(
+    OpCapability MeshShadingEXT
+    OpExtension "SPV_EXT_mesh_shader"
+%1 = OpExtInstImport "GLSL.std.450"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint MeshEXT %main "main" %gl_PrimitiveTriangleIndicesEXT
+    OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+    OpExecutionMode %main OutputVertices 81
+    OpExecutionMode %main OutputPrimitivesEXT 32
+    OpExecutionMode %main OutputTrianglesEXT
+    OpSource GLSL 460
+    OpSourceExtension "GL_EXT_mesh_shader"
+    OpName %main "main"
+    OpName %gl_PrimitiveTriangleIndicesEXT "gl_PrimitiveTriangleIndicesEXT"
+    OpDecorate %gl_PrimitiveTriangleIndicesEXT BuiltIn PrimitiveTriangleIndicesEXT
+%void = OpTypeVoid
+%7 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%v3uint = OpTypeVector %uint 3
+%_arr_v3uint_uint_32 = OpTypeArray %v3uint %uint_32
+%_ptr_Output__arr_v3uint_uint_32 = OpTypePointer Output %_arr_v3uint_uint_32
+%gl_PrimitiveTriangleIndicesEXT = OpVariable %_ptr_Output__arr_v3uint_uint_32 Output
+%int = OpTypeInt 32 1
+%int_0 = OpConstant %int 0
+%uint_0 = OpConstant %uint 0
+%15 = OpConstantComposite %v3uint %uint_0 %uint_0 %uint_0
+%_ptr_Output_v3uint = OpTypePointer Output %v3uint
+%17 = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+%main = OpFunction %void None %7
+%18 = OpLabel
+%19 = OpAccessChain %_ptr_Output_v3uint %gl_PrimitiveTriangleIndicesEXT %int_0
+    OpStore %19 %15
+    OpReturn
+    OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinPrimitiveTriangleIndicesEXT) {
+  const std::string text = R"(
+    OpCapability MeshShadingEXT
+    OpExtension "SPV_EXT_mesh_shader"
+%1 = OpExtInstImport "GLSL.std.450"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint MeshEXT %main "main" %gl_PrimitiveTriangleIndicesEXT
+    OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+    OpExecutionMode %main OutputVertices 81
+    OpExecutionMode %main OutputPrimitivesEXT 32
+    OpExecutionMode %main OutputPoints
+    OpSource GLSL 460
+    OpSourceExtension "GL_EXT_mesh_shader"
+    OpName %main "main"
+    OpName %gl_PrimitiveTriangleIndicesEXT "gl_PrimitiveTriangleIndicesEXT"
+    OpDecorate %gl_PrimitiveTriangleIndicesEXT BuiltIn PrimitiveTriangleIndicesEXT
+%void = OpTypeVoid
+%7 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%v3uint = OpTypeVector %uint 3
+%_arr_v3uint_uint_32 = OpTypeArray %v3uint %uint_32
+%_ptr_Output__arr_v3uint_uint_32 = OpTypePointer Output %_arr_v3uint_uint_32
+%gl_PrimitiveTriangleIndicesEXT = OpVariable %_ptr_Output__arr_v3uint_uint_32 Output
+%int = OpTypeInt 32 1
+%int_0 = OpConstant %int 0
+%uint_0 = OpConstant %uint 0
+%15 = OpConstantComposite %v3uint %uint_0 %uint_0 %uint_0
+%_ptr_Output_v3uint = OpTypePointer Output %v3uint
+%17 = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+%main = OpFunction %void None %7
+%18 = OpLabel
+%19 = OpAccessChain %_ptr_Output_v3uint %gl_PrimitiveTriangleIndicesEXT %int_0
+    OpStore %19 %15
+    OpReturn
+    OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-PrimitiveTriangleIndicesEXT-"
+                      "PrimitiveTriangleIndicesEXT-07054"));
+}
+
+// https://github.com/KhronosGroup/SPIRV-Tools/issues/6307
+TEST_F(ValidateBuiltIns, VulkanBuiltinPrimitiveTriangleIndicesMultiEntrypoint) {
+  const std::string text = R"(
+               OpCapability Shader
+               OpCapability MeshShadingEXT
+               OpCapability VulkanMemoryModel
+               OpExtension "SPV_EXT_mesh_shader"
+               OpMemoryModel Logical Vulkan
+               OpEntryPoint MeshEXT %1 "mesh" %positions %indices
+               OpEntryPoint Fragment %4 "frag" %color
+               OpExecutionMode %1 LocalSize 1 1 1
+               OpExecutionMode %1 OutputVertices 3
+               OpExecutionMode %1 OutputPrimitivesEXT 1
+               OpExecutionMode %1 OutputTrianglesEXT
+               OpExecutionMode %4 OriginUpperLeft
+               OpDecorate %_arr_v4float_uint_3 ArrayStride 16
+               OpDecorate %_arr_v3uint_uint_1 ArrayStride 16
+               OpDecorate %positions BuiltIn Position
+               OpDecorate %indices BuiltIn PrimitiveTriangleIndicesEXT
+               OpDecorate %color Location 0
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+       %uint = OpTypeInt 32 0
+     %uint_3 = OpConstant %uint 3
+%_arr_v4float_uint_3 = OpTypeArray %v4float %uint_3
+%_ptr_Output__arr_v4float_uint_3 = OpTypePointer Output %_arr_v4float_uint_3
+     %v3uint = OpTypeVector %uint 3
+     %uint_1 = OpConstant %uint 1
+%_arr_v3uint_uint_1 = OpTypeArray %v3uint %uint_1
+%_ptr_Output__arr_v3uint_uint_1 = OpTypePointer Output %_arr_v3uint_uint_1
+       %void = OpTypeVoid
+         %18 = OpTypeFunction %void
+     %uint_0 = OpConstant %uint 0
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+  %positions = OpVariable %_ptr_Output__arr_v4float_uint_3 Output
+    %indices = OpVariable %_ptr_Output__arr_v3uint_uint_1 Output
+      %color = OpVariable %_ptr_Output_v4float Output
+          %1 = OpFunction %void None %18
+         %21 = OpLabel
+               OpSetMeshOutputsEXT %uint_0 %uint_0
+               OpNoLine
+               OpReturn
+               OpFunctionEnd
+          %4 = OpFunction %void None %18
+         %22 = OpLabel
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanPrimitivePointIndicesArraySizeMeshEXT) {
+  const std::string text = R"(
+   OpCapability MeshShadingEXT
+   OpExtension "SPV_EXT_mesh_shader"
+%1 = OpExtInstImport "GLSL.std.450"
+   OpMemoryModel Logical GLSL450
+   OpEntryPoint MeshEXT %main "main" %gl_PrimitivePointIndicesEXT
+   OpExecutionMode %main LocalSize 32 1 1
+   OpExecutionMode %main OutputVertices 81
+   OpExecutionMode %main OutputPrimitivesEXT 16
+   OpExecutionMode %main OutputPoints
+   OpSource GLSL 460
+   OpSourceExtension "GL_EXT_mesh_shader"
+   OpName %main "main"
+   OpName %gl_PrimitivePointIndicesEXT "gl_PrimitivePointIndicesEXT"
+   OpDecorate %gl_PrimitivePointIndicesEXT BuiltIn PrimitivePointIndicesEXT
+   OpDecorate %gl_WorkGroupSize BuiltIn WorkgroupSize
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%_arr_uint_uint_32 = OpTypeArray %uint %uint_32
+%_ptr_Output__arr_uint_uint_32 = OpTypePointer Output %_arr_uint_uint_32
+%gl_PrimitivePointIndicesEXT = OpVariable %_ptr_Output__arr_uint_uint_32 Output
+%int = OpTypeInt 32 1
+%int_0 = OpConstant %int 0
+%uint_0 = OpConstant %uint 0
+%_ptr_Output_uint = OpTypePointer Output %uint
+%v3uint = OpTypeVector %uint 3
+%uint_1 = OpConstant %uint 1
+%gl_WorkGroupSize = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+%main = OpFunction %void None %3
+%5 = OpLabel
+%15 = OpAccessChain %_ptr_Output_uint %gl_PrimitivePointIndicesEXT %int_0
+   OpStore %15 %uint_0
+   OpReturn
+   OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_2);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      AnyVUID("VUID-PrimitivePointIndicesEXT-PrimitivePointIndicesEXT-07046"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanPrimitiveLineIndicesArraySizeMeshEXT) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_PrimitiveLineIndicesEXT
+      OpExecutionMode %main LocalSize 32 1 1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 16
+      OpExecutionMode %main OutputLinesEXT
+      OpSource GLSL 460
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_PrimitiveLineIndicesEXT "gl_PrimitiveLineIndicesEXT"
+      OpDecorate %gl_PrimitiveLineIndicesEXT BuiltIn PrimitiveLineIndicesEXT
+      OpDecorate %gl_WorkGroupSize BuiltIn WorkgroupSize
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%v2uint = OpTypeVector %uint 2
+%uint_32 = OpConstant %uint 32
+%_arr_v2uint_uint_32 = OpTypeArray %v2uint %uint_32
+%_ptr_Output__arr_v2uint_uint_32 = OpTypePointer Output %_arr_v2uint_uint_32
+%gl_PrimitiveLineIndicesEXT = OpVariable %_ptr_Output__arr_v2uint_uint_32 Output
+%int = OpTypeInt 32 1
+%int_0 = OpConstant %int 0
+%uint_0 = OpConstant %uint 0
+%15 = OpConstantComposite %v2uint %uint_0 %uint_0
+%_ptr_Output_v2uint = OpTypePointer Output %v2uint
+%v3uint = OpTypeVector %uint 3
+%uint_1 = OpConstant %uint 1
+%gl_WorkGroupSize = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+%main = OpFunction %void None %3
+ %5 = OpLabel
+%17 = OpAccessChain %_ptr_Output_v2uint %gl_PrimitiveLineIndicesEXT %int_0
+      OpStore %17 %15
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      AnyVUID("VUID-PrimitiveLineIndicesEXT-PrimitiveLineIndicesEXT-07052"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanPrimitiveTriangleIndicesArraySizeMeshEXT) {
+  const std::string text = R"(
+  OpCapability MeshShadingEXT
+  OpExtension "SPV_EXT_mesh_shader"
+%1 = OpExtInstImport "GLSL.std.450"
+  OpMemoryModel Logical GLSL450
+  OpEntryPoint MeshEXT %main "main" %gl_PrimitiveTriangleIndicesEXT
+  OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+  OpExecutionMode %main OutputVertices 81
+  OpExecutionMode %main OutputPrimitivesEXT 16
+  OpExecutionMode %main OutputTrianglesEXT
+  OpSource GLSL 460
+  OpSourceExtension "GL_EXT_mesh_shader"
+  OpName %main "main"
+  OpName %gl_PrimitiveTriangleIndicesEXT "gl_PrimitiveTriangleIndicesEXT"
+  OpDecorate %gl_PrimitiveTriangleIndicesEXT BuiltIn PrimitiveTriangleIndicesEXT
+%void = OpTypeVoid
+%7 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%v3uint = OpTypeVector %uint 3
+%_arr_v3uint_uint_32 = OpTypeArray %v3uint %uint_32
+%_ptr_Output__arr_v3uint_uint_32 = OpTypePointer Output %_arr_v3uint_uint_32
+%gl_PrimitiveTriangleIndicesEXT = OpVariable %_ptr_Output__arr_v3uint_uint_32 Output
+%int = OpTypeInt 32 1
+%int_0 = OpConstant %int 0
+%uint_0 = OpConstant %uint 0
+%15 = OpConstantComposite %v3uint %uint_0 %uint_0 %uint_0
+%_ptr_Output_v3uint = OpTypePointer Output %v3uint
+%17 = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+%main = OpFunction %void None %7
+%18 = OpLabel
+%19 = OpAccessChain %_ptr_Output_v3uint %gl_PrimitiveTriangleIndicesEXT %int_0
+  OpStore %19 %15
+  OpReturn
+  OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-PrimitiveTriangleIndicesEXT-"
+                      "PrimitiveTriangleIndicesEXT-07058"));
+}
+
+// https://godbolt.org/z/xqsMqqnxd
+TEST_F(ValidateBuiltIns, VulkanMeshMultipleTopology) {
+  const std::string text = R"(
+               OpCapability MeshShadingEXT
+               OpCapability Shader
+               OpExtension "SPV_EXT_mesh_shader"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint MeshEXT %main1 "main1" %26 %vertices_color
+               OpEntryPoint MeshEXT %main2 "main2" %43 %vertices_color_0
+               OpExecutionMode %main1 OutputVertices 3
+               OpExecutionMode %main1 OutputPrimitivesEXT 1
+               OpExecutionMode %main1 LocalSize 1 1 1
+               OpExecutionMode %main1 OutputTrianglesEXT
+               OpExecutionMode %main2 OutputVertices 3
+               OpExecutionMode %main2 OutputPrimitivesEXT 1
+               OpExecutionMode %main2 LocalSize 1 1 1
+               OpExecutionMode %main2 OutputLinesEXT
+               OpDecorate %vertices_color Location 0
+               OpDecorate %26 BuiltIn PrimitiveTriangleIndicesEXT
+               OpDecorate %vertices_color_0 Location 0
+               OpDecorate %43 BuiltIn PrimitiveLineIndicesEXT
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %uint_3 = OpConstant %uint 3
+     %uint_1 = OpConstant %uint 1
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+        %int = OpTypeInt 32 1
+      %int_3 = OpConstant %int 3
+%_arr_v4float_int_3 = OpTypeArray %v4float %int_3
+%_ptr_Output__arr_v4float_int_3 = OpTypePointer Output %_arr_v4float_int_3
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+     %uint_0 = OpConstant %uint 0
+    %float_0 = OpConstant %float 0
+         %19 = OpConstantComposite %v4float %float_0 %float_0 %float_0 %float_0
+     %v3uint = OpTypeVector %uint 3
+      %int_1 = OpConstant %int 1
+%_arr_v3uint_int_1 = OpTypeArray %v3uint %int_1
+%_ptr_Output__arr_v3uint_int_1 = OpTypePointer Output %_arr_v3uint_int_1
+%_ptr_Output_v3uint = OpTypePointer Output %v3uint
+     %uint_2 = OpConstant %uint 2
+         %29 = OpConstantComposite %v3uint %uint_0 %uint_1 %uint_2
+         %38 = OpConstantComposite %v4float %float_0 %float_0 %float_0 %float_0
+     %v2uint = OpTypeVector %uint 2
+%_arr_v2uint_int_1 = OpTypeArray %v2uint %int_1
+%_ptr_Output__arr_v2uint_int_1 = OpTypePointer Output %_arr_v2uint_int_1
+%_ptr_Output_v2uint = OpTypePointer Output %v2uint
+         %46 = OpConstantComposite %v2uint %uint_0 %uint_1
+%vertices_color = OpVariable %_ptr_Output__arr_v4float_int_3 Output
+         %26 = OpVariable %_ptr_Output__arr_v3uint_int_1 Output
+%vertices_color_0 = OpVariable %_ptr_Output__arr_v4float_int_3 Output
+         %43 = OpVariable %_ptr_Output__arr_v2uint_int_1 Output
+      %main1 = OpFunction %void None %3
+          %4 = OpLabel
+               OpSetMeshOutputsEXT %uint_3 %uint_1
+         %17 = OpAccessChain %_ptr_Output_v4float %vertices_color %uint_0
+               OpStore %17 %19
+         %28 = OpAccessChain %_ptr_Output_v3uint %26 %uint_0
+               OpStore %28 %29
+               OpReturn
+               OpFunctionEnd
+      %main2 = OpFunction %void None %3
+         %34 = OpLabel
+               OpSetMeshOutputsEXT %uint_3 %uint_1
+         %37 = OpAccessChain %_ptr_Output_v4float %vertices_color_0 %uint_0
+               OpStore %37 %38
+         %45 = OpAccessChain %_ptr_Output_v2uint %43 %uint_0
+               OpStore %45 %46
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+// https://godbolt.org/z/MeTadeYEr
+TEST_F(ValidateBuiltIns, VulkanMeshMultipleArraySizes) {
+  const std::string text = R"(
+    OpCapability MeshShadingEXT
+               OpCapability Shader
+               OpExtension "SPV_EXT_mesh_shader"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint MeshEXT %main1 "main1" %var1 %vertices_color
+               OpEntryPoint MeshEXT %main2 "main2" %var2 %vertices_color_0
+               OpExecutionMode %main1 OutputVertices 3
+               OpExecutionMode %main1 OutputPrimitivesEXT 2
+               OpExecutionMode %main1 LocalSize 1 1 1
+               OpExecutionMode %main1 OutputTrianglesEXT
+               OpExecutionMode %main2 OutputVertices 3
+               OpExecutionMode %main2 OutputPrimitivesEXT 4
+               OpExecutionMode %main2 LocalSize 1 1 1
+               OpExecutionMode %main2 OutputTrianglesEXT
+               OpSource Slang 1
+               OpName %vertices_color "vertices.color"
+               OpName %main1 "main1"
+               OpName %vertices_color_0 "vertices.color"
+               OpName %main2 "main2"
+               OpDecorate %vertices_color Location 0
+               OpDecorate %var1 BuiltIn PrimitiveTriangleIndicesEXT
+               OpDecorate %var2 BuiltIn PrimitiveTriangleIndicesEXT
+               OpDecorate %vertices_color_0 Location 0
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %uint_3 = OpConstant %uint 3
+     %uint_1 = OpConstant %uint 1
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+        %int = OpTypeInt 32 1
+      %int_3 = OpConstant %int 3
+%_arr_v4float_int_3 = OpTypeArray %v4float %int_3
+%_ptr_Output__arr_v4float_int_3 = OpTypePointer Output %_arr_v4float_int_3
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+     %uint_0 = OpConstant %uint 0
+    %float_0 = OpConstant %float 0
+         %19 = OpConstantComposite %v4float %float_0 %float_0 %float_0 %float_0
+     %v3uint = OpTypeVector %uint 3
+      %int_2 = OpConstant %int 2
+      %int_4 = OpConstant %int 4
+%_arr_v3uint_int_2 = OpTypeArray %v3uint %int_2
+%_arr_v3uint_int_4 = OpTypeArray %v3uint %int_4
+%_ptr_Output__arr_v3uint_int_2 = OpTypePointer Output %_arr_v3uint_int_2
+%_ptr_Output__arr_v3uint_int_4 = OpTypePointer Output %_arr_v3uint_int_4
+%_ptr_Output_v3uint = OpTypePointer Output %v3uint
+     %uint_2 = OpConstant %uint 2
+         %29 = OpConstantComposite %v3uint %uint_0 %uint_1 %uint_2
+         %38 = OpConstantComposite %v4float %float_0 %float_0 %float_0 %float_0
+         %41 = OpConstantComposite %v3uint %uint_0 %uint_1 %uint_2
+%vertices_color = OpVariable %_ptr_Output__arr_v4float_int_3 Output
+         %var1 = OpVariable %_ptr_Output__arr_v3uint_int_2 Output
+         %var2 = OpVariable %_ptr_Output__arr_v3uint_int_4 Output
+%vertices_color_0 = OpVariable %_ptr_Output__arr_v4float_int_3 Output
+      %main1 = OpFunction %void None %3
+          %4 = OpLabel
+               OpSetMeshOutputsEXT %uint_3 %uint_1
+         %17 = OpAccessChain %_ptr_Output_v4float %vertices_color %uint_0
+               OpStore %17 %19
+         %28 = OpAccessChain %_ptr_Output_v3uint %var1 %uint_0
+               OpStore %28 %29
+               OpReturn
+               OpFunctionEnd
+      %main2 = OpFunction %void None %3
+         %34 = OpLabel
+               OpSetMeshOutputsEXT %uint_3 %uint_1
+         %37 = OpAccessChain %_ptr_Output_v4float %vertices_color_0 %uint_0
+               OpStore %37 %38
+         %40 = OpAccessChain %_ptr_Output_v3uint %var2 %uint_0
+               OpStore %40 %41
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanMeshMultipleArraySizes) {
+  const std::string text = R"(
+                 OpCapability MeshShadingEXT
+               OpCapability Shader
+               OpExtension "SPV_EXT_mesh_shader"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint MeshEXT %main1 "main1" %26 %vertices_color
+               OpEntryPoint MeshEXT %main2 "main2" %26 %vertices_color_0
+               OpExecutionMode %main1 OutputVertices 3
+               OpExecutionMode %main1 OutputPrimitivesEXT 2
+               OpExecutionMode %main1 LocalSize 1 1 1
+               OpExecutionMode %main1 OutputTrianglesEXT
+               OpExecutionMode %main2 OutputVertices 3
+               OpExecutionMode %main2 OutputPrimitivesEXT 42
+               OpExecutionMode %main2 LocalSize 1 1 1
+               OpExecutionMode %main2 OutputTrianglesEXT
+               OpSource Slang 1
+               OpName %vertices_color "vertices.color"
+               OpName %main1 "main1"
+               OpName %vertices_color_0 "vertices.color"
+               OpName %main2 "main2"
+               OpDecorate %vertices_color Location 0
+               OpDecorate %26 BuiltIn PrimitiveTriangleIndicesEXT
+               OpDecorate %vertices_color_0 Location 0
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %uint_3 = OpConstant %uint 3
+     %uint_1 = OpConstant %uint 1
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+        %int = OpTypeInt 32 1
+      %int_3 = OpConstant %int 3
+%_arr_v4float_int_3 = OpTypeArray %v4float %int_3
+%_ptr_Output__arr_v4float_int_3 = OpTypePointer Output %_arr_v4float_int_3
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+     %uint_0 = OpConstant %uint 0
+    %float_0 = OpConstant %float 0
+         %19 = OpConstantComposite %v4float %float_0 %float_0 %float_0 %float_0
+     %v3uint = OpTypeVector %uint 3
+      %int_2 = OpConstant %int 2
+%_arr_v3uint_int_2 = OpTypeArray %v3uint %int_2
+%_ptr_Output__arr_v3uint_int_2 = OpTypePointer Output %_arr_v3uint_int_2
+%_ptr_Output_v3uint = OpTypePointer Output %v3uint
+     %uint_2 = OpConstant %uint 2
+         %29 = OpConstantComposite %v3uint %uint_0 %uint_1 %uint_2
+         %38 = OpConstantComposite %v4float %float_0 %float_0 %float_0 %float_0
+         %41 = OpConstantComposite %v3uint %uint_0 %uint_1 %uint_2
+%vertices_color = OpVariable %_ptr_Output__arr_v4float_int_3 Output
+         %26 = OpVariable %_ptr_Output__arr_v3uint_int_2 Output
+%vertices_color_0 = OpVariable %_ptr_Output__arr_v4float_int_3 Output
+      %main1 = OpFunction %void None %3
+          %4 = OpLabel
+               OpSetMeshOutputsEXT %uint_3 %uint_1
+         %17 = OpAccessChain %_ptr_Output_v4float %vertices_color %uint_0
+               OpStore %17 %19
+         %28 = OpAccessChain %_ptr_Output_v3uint %26 %uint_0
+               OpStore %28 %29
+               OpReturn
+               OpFunctionEnd
+      %main2 = OpFunction %void None %3
+         %34 = OpLabel
+               OpSetMeshOutputsEXT %uint_3 %uint_1
+         %37 = OpAccessChain %_ptr_Output_v4float %vertices_color_0 %uint_0
+               OpStore %37 %38
+         %40 = OpAccessChain %_ptr_Output_v3uint %26 %uint_0
+               OpStore %40 %41
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-PrimitiveTriangleIndicesEXT-"
+                      "PrimitiveTriangleIndicesEXT-07058"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanMeshMultipleArraySizesSharedVariable) {
+  const std::string text = R"(
+               OpCapability MeshShadingEXT
+               OpCapability Shader
+               OpExtension "SPV_EXT_mesh_shader"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint MeshEXT %main1 "main1" %26 %vertices_color
+               OpEntryPoint MeshEXT %main2 "main2" %26 %vertices_color_0
+               OpExecutionMode %main1 OutputVertices 3
+               OpExecutionMode %main1 OutputPrimitivesEXT 2
+               OpExecutionMode %main1 LocalSize 1 1 1
+               OpExecutionMode %main1 OutputTrianglesEXT
+               OpExecutionMode %main2 OutputVertices 3
+               OpExecutionMode %main2 OutputPrimitivesEXT 4
+               OpExecutionMode %main2 LocalSize 1 1 1
+               OpExecutionMode %main2 OutputTrianglesEXT
+               OpSource Slang 1
+               OpName %vertices_color "vertices.color"
+               OpName %main1 "main1"
+               OpName %vertices_color_0 "vertices.color"
+               OpName %main2 "main2"
+               OpDecorate %vertices_color Location 0
+               OpDecorate %26 BuiltIn PrimitiveTriangleIndicesEXT
+               OpDecorate %vertices_color_0 Location 0
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %uint_3 = OpConstant %uint 3
+     %uint_1 = OpConstant %uint 1
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+        %int = OpTypeInt 32 1
+      %int_3 = OpConstant %int 3
+%_arr_v4float_int_3 = OpTypeArray %v4float %int_3
+%_ptr_Output__arr_v4float_int_3 = OpTypePointer Output %_arr_v4float_int_3
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+     %uint_0 = OpConstant %uint 0
+    %float_0 = OpConstant %float 0
+         %19 = OpConstantComposite %v4float %float_0 %float_0 %float_0 %float_0
+     %v3uint = OpTypeVector %uint 3
+      %int_2 = OpConstant %int 2
+%_arr_v3uint_int_2 = OpTypeArray %v3uint %int_2
+%_ptr_Output__arr_v3uint_int_2 = OpTypePointer Output %_arr_v3uint_int_2
+%_ptr_Output_v3uint = OpTypePointer Output %v3uint
+     %uint_2 = OpConstant %uint 2
+         %29 = OpConstantComposite %v3uint %uint_0 %uint_1 %uint_2
+         %38 = OpConstantComposite %v4float %float_0 %float_0 %float_0 %float_0
+         %41 = OpConstantComposite %v3uint %uint_0 %uint_1 %uint_2
+%vertices_color = OpVariable %_ptr_Output__arr_v4float_int_3 Output
+         %26 = OpVariable %_ptr_Output__arr_v3uint_int_2 Output
+%vertices_color_0 = OpVariable %_ptr_Output__arr_v4float_int_3 Output
+      %main1 = OpFunction %void None %3
+          %4 = OpLabel
+               OpSetMeshOutputsEXT %uint_3 %uint_1
+         %17 = OpAccessChain %_ptr_Output_v4float %vertices_color %uint_0
+               OpStore %17 %19
+         %28 = OpAccessChain %_ptr_Output_v3uint %26 %uint_0
+               OpStore %28 %29
+               OpReturn
+               OpFunctionEnd
+      %main2 = OpFunction %void None %3
+         %34 = OpLabel
+               OpSetMeshOutputsEXT %uint_3 %uint_1
+         %37 = OpAccessChain %_ptr_Output_v4float %vertices_color_0 %uint_0
+               OpStore %37 %38
+         %40 = OpAccessChain %_ptr_Output_v3uint %26 %uint_0
+               OpStore %40 %41
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-PrimitiveTriangleIndicesEXT-"
+                      "PrimitiveTriangleIndicesEXT-07058"));
+}
+
+TEST_F(ValidateBuiltIns, BadExecModelVulkanPrimitivePointIndicesEXT) {
+  const std::string text = R"(
+  OpCapability MeshShadingNV
+  OpCapability MeshShadingEXT
+  OpExtension "SPV_NV_mesh_shader"
+  OpExtension "SPV_EXT_mesh_shader"
+%1 = OpExtInstImport "GLSL.std.450"
+  OpMemoryModel Logical GLSL450
+  OpEntryPoint MeshNV %main "main" %gl_PrimitivePointIndicesEXT
+  OpExecutionMode %main LocalSize 32 1 1
+  OpExecutionMode %main OutputVertices 81
+  OpExecutionMode %main OutputPrimitivesEXT 32
+  OpExecutionMode %main OutputPoints
+  OpSource GLSL 460
+  OpSourceExtension "GL_EXT_mesh_shader"
+  OpName %main "main"
+  OpName %gl_PrimitivePointIndicesEXT "gl_PrimitivePointIndicesEXT"
+  OpDecorate %gl_PrimitivePointIndicesEXT BuiltIn PrimitivePointIndicesEXT
+  OpDecorate %gl_WorkGroupSize BuiltIn WorkgroupSize
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%_arr_uint_uint_32 = OpTypeArray %uint %uint_32
+%_ptr_Output__arr_uint_uint_32 = OpTypePointer Output %_arr_uint_uint_32
+%gl_PrimitivePointIndicesEXT = OpVariable %_ptr_Output__arr_uint_uint_32 Output
+%int = OpTypeInt 32 1
+%int_0 = OpConstant %int 0
+%uint_0 = OpConstant %uint 0
+%_ptr_Output_uint = OpTypePointer Output %uint
+%v3uint = OpTypeVector %uint 3
+%uint_1 = OpConstant %uint 1
+%gl_WorkGroupSize = OpConstantComposite %v3uint %uint_32 %uint_1 %uint_1
+%main = OpFunction %void None %3
+%5 = OpLabel
+%15 = OpAccessChain %_ptr_Output_uint %gl_PrimitivePointIndicesEXT %int_0
+  OpStore %15 %uint_0
+  OpReturn
+  OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      AnyVUID("VUID-PrimitivePointIndicesEXT-PrimitivePointIndicesEXT-07041"));
+}
+
+TEST_F(ValidateBuiltIns, VulkanBuiltinCullPrimitiveEXTInBlock) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+      OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_CullPrimitiveEXT"
+      OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+      OpDecorate %gl_MeshPerPrimitiveEXT Block
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn CullPrimitiveEXT
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %bool
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinCullPrimitiveEXTBlockArraySize) {
+  const std::string text = R"(
+        OpCapability MeshShadingEXT
+        OpExtension "SPV_EXT_mesh_shader"
+   %1 = OpExtInstImport "GLSL.std.450"
+        OpMemoryModel Logical GLSL450
+        OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+        OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+        OpExecutionMode %main OutputVertices 81
+        OpExecutionMode %main OutputPrimitivesEXT 32
+        OpExecutionMode %main OutputTrianglesEXT
+        OpSource GLSL 450
+        OpSourceExtension "GL_EXT_mesh_shader"
+        OpName %main "main"
+        OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+        OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_CullPrimitiveEXT"
+        OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+        OpDecorate %gl_MeshPerPrimitiveEXT Block
+        OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn CullPrimitiveEXT
+        OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+  %void = OpTypeVoid
+   %3 = OpTypeFunction %void
+  %uint = OpTypeInt 32 0
+  %uint_32 = OpConstant %uint 32
+  %uint_16 = OpConstant %uint 16
+  %uint_1 = OpConstant %uint 1
+  %int = OpTypeInt 32 1
+  %bool = OpTypeBool
+  %gl_MeshPerPrimitiveEXT = OpTypeStruct %bool
+  %_arr_gl_MeshPerPrimitiveEXT_uint_16 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_16
+  %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_16 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_16
+  %gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_16 Output
+  %main = OpFunction %void None %3
+   %5 = OpLabel
+ %ref_load = OpLoad %_arr_gl_MeshPerPrimitiveEXT_uint_16 %gl_MeshPrimitivesEXT
+        OpReturn
+        OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-CullPrimitiveEXT-CullPrimitiveEXT-10590"));
+}
+
+TEST_F(ValidateBuiltIns, VulkanBuiltinCullPrimitiveEXTMissingBlock) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+      OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_CullPrimitiveEXT"
+      OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn CullPrimitiveEXT
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %bool
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+%ref_load = OpLoad %_arr_gl_MeshPerPrimitiveEXT_uint_32 %gl_MeshPrimitivesEXT
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-CullPrimitiveEXT-CullPrimitiveEXT-07036"));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("Scalar boolean must be in a Block"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinCullPrimitiveEXTType) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+      OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_CullPrimitiveEXT"
+      OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+      OpDecorate %gl_MeshPerPrimitiveEXT Block
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn CullPrimitiveEXT
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %int
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+%ref_load = OpLoad %_arr_gl_MeshPerPrimitiveEXT_uint_32 %gl_MeshPrimitivesEXT
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-CullPrimitiveEXT-CullPrimitiveEXT-07036"));
+}
+
+// from https://github.com/KhronosGroup/SPIRV-Tools/issues/5980
+TEST_F(ValidateBuiltIns, VulkanBuiltinCullPrimitiveEXTArrayOfBool) {
+  const std::string text = R"(
+               OpCapability MeshShadingEXT
+               OpExtension "SPV_EXT_mesh_shader"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint MeshEXT %main "main" %gl_LocalInvocationIndex %gl_Position %4 %5
+               OpExecutionMode %main LocalSize 2 1 1
+               OpExecutionMode %main OutputTrianglesEXT
+               OpExecutionMode %main OutputVertices 2
+               OpExecutionMode %main OutputPrimitivesEXT 2
+               OpDecorate %gl_LocalInvocationIndex BuiltIn LocalInvocationIndex
+               OpDecorate %gl_Position BuiltIn Position
+               OpDecorate %4 BuiltIn PrimitiveTriangleIndicesEXT
+               OpDecorate %5 BuiltIn CullPrimitiveEXT
+               OpDecorate %5 PerPrimitiveEXT
+       %uint = OpTypeInt 32 0
+     %uint_2 = OpConstant %uint 2
+       %bool = OpTypeBool
+      %false = OpConstantFalse %bool
+%_ptr_Input_uint = OpTypePointer Input %uint
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+%_arr_v4float_uint_2 = OpTypeArray %v4float %uint_2
+%_ptr_Output__arr_v4float_uint_2 = OpTypePointer Output %_arr_v4float_uint_2
+     %v3uint = OpTypeVector %uint 3
+%_arr_v3uint_uint_2 = OpTypeArray %v3uint %uint_2
+%_ptr_Output__arr_v3uint_uint_2 = OpTypePointer Output %_arr_v3uint_uint_2
+%_arr_bool_uint_2 = OpTypeArray %bool %uint_2
+%_ptr_Output__arr_bool_uint_2 = OpTypePointer Output %_arr_bool_uint_2
+       %void = OpTypeVoid
+         %21 = OpTypeFunction %void
+%_ptr_Output_bool = OpTypePointer Output %bool
+%gl_LocalInvocationIndex = OpVariable %_ptr_Input_uint Input
+%gl_Position = OpVariable %_ptr_Output__arr_v4float_uint_2 Output
+          %4 = OpVariable %_ptr_Output__arr_v3uint_uint_2 Output
+          %5 = OpVariable %_ptr_Output__arr_bool_uint_2 Output
+       %main = OpFunction %void None %21
+         %23 = OpLabel
+         %24 = OpLoad %uint %gl_LocalInvocationIndex
+               OpSetMeshOutputsEXT %uint_2 %uint_2
+         %25 = OpAccessChain %_ptr_Output_bool %5 %24
+               OpStore %25 %false
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinCullPrimitiveEXTArrayType) {
+  const std::string text = R"(
+               OpCapability MeshShadingEXT
+               OpExtension "SPV_EXT_mesh_shader"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint MeshEXT %main "main" %gl_LocalInvocationIndex %gl_Position %4 %5
+               OpExecutionMode %main LocalSize 2 1 1
+               OpExecutionMode %main OutputTrianglesEXT
+               OpExecutionMode %main OutputVertices 2
+               OpExecutionMode %main OutputPrimitivesEXT 2
+               OpDecorate %gl_LocalInvocationIndex BuiltIn LocalInvocationIndex
+               OpDecorate %gl_Position BuiltIn Position
+               OpDecorate %4 BuiltIn PrimitiveTriangleIndicesEXT
+               OpDecorate %5 BuiltIn CullPrimitiveEXT
+               OpDecorate %5 PerPrimitiveEXT
+       %uint = OpTypeInt 32 0
+     %uint_2 = OpConstant %uint 2
+       %bool = OpTypeBool
+      %false = OpConstantFalse %bool
+%_ptr_Input_uint = OpTypePointer Input %uint
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+%_arr_v4float_uint_2 = OpTypeArray %v4float %uint_2
+%_ptr_Output__arr_v4float_uint_2 = OpTypePointer Output %_arr_v4float_uint_2
+     %v3uint = OpTypeVector %uint 3
+%_arr_v3uint_uint_2 = OpTypeArray %v3uint %uint_2
+%_ptr_Output__arr_v3uint_uint_2 = OpTypePointer Output %_arr_v3uint_uint_2
+%_arr_uint_uint_2 = OpTypeArray %uint %uint_2
+%_ptr_Output__arr_uint_uint_2 = OpTypePointer Output %_arr_uint_uint_2
+       %void = OpTypeVoid
+         %21 = OpTypeFunction %void
+%_ptr_Output_uint = OpTypePointer Output %uint
+%gl_LocalInvocationIndex = OpVariable %_ptr_Input_uint Input
+%gl_Position = OpVariable %_ptr_Output__arr_v4float_uint_2 Output
+          %4 = OpVariable %_ptr_Output__arr_v3uint_uint_2 Output
+          %5 = OpVariable %_ptr_Output__arr_uint_uint_2 Output
+       %main = OpFunction %void None %21
+         %23 = OpLabel
+         %24 = OpLoad %uint %gl_LocalInvocationIndex
+               OpSetMeshOutputsEXT %uint_2 %uint_2
+         %25 = OpAccessChain %_ptr_Output_uint %5 %24
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-CullPrimitiveEXT-CullPrimitiveEXT-07036"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinCullPrimitiveEXTArrayOfBoolSize) {
+  const std::string text = R"(
+          OpCapability MeshShadingEXT
+          OpExtension "SPV_EXT_mesh_shader"
+          OpMemoryModel Logical GLSL450
+          OpEntryPoint MeshEXT %main "main" %gl_LocalInvocationIndex %gl_Position %4 %5
+          OpExecutionMode %main LocalSize 2 1 1
+          OpExecutionMode %main OutputTrianglesEXT
+          OpExecutionMode %main OutputVertices 2
+          OpExecutionMode %main OutputPrimitivesEXT 2
+          OpDecorate %gl_LocalInvocationIndex BuiltIn LocalInvocationIndex
+          OpDecorate %gl_Position BuiltIn Position
+          OpDecorate %4 BuiltIn PrimitiveTriangleIndicesEXT
+          OpDecorate %5 BuiltIn CullPrimitiveEXT
+          OpDecorate %5 PerPrimitiveEXT
+  %uint = OpTypeInt 32 0
+%uint_2 = OpConstant %uint 2
+%uint_4 = OpConstant %uint 4
+  %bool = OpTypeBool
+ %false = OpConstantFalse %bool
+%_ptr_Input_uint = OpTypePointer Input %uint
+ %float = OpTypeFloat 32
+%v4float = OpTypeVector %float 4
+%_arr_v4float_uint_2 = OpTypeArray %v4float %uint_2
+%_ptr_Output__arr_v4float_uint_2 = OpTypePointer Output %_arr_v4float_uint_2
+%v3uint = OpTypeVector %uint 3
+%_arr_v3uint_uint_2 = OpTypeArray %v3uint %uint_2
+%_ptr_Output__arr_v3uint_uint_2 = OpTypePointer Output %_arr_v3uint_uint_2
+%_arr_bool_uint_4 = OpTypeArray %bool %uint_4
+%_ptr_Output__arr_bool_uint_4 = OpTypePointer Output %_arr_bool_uint_4
+  %void = OpTypeVoid
+    %21 = OpTypeFunction %void
+%_ptr_Output_bool = OpTypePointer Output %bool
+%gl_LocalInvocationIndex = OpVariable %_ptr_Input_uint Input
+%gl_Position = OpVariable %_ptr_Output__arr_v4float_uint_2 Output
+     %4 = OpVariable %_ptr_Output__arr_v3uint_uint_2 Output
+     %5 = OpVariable %_ptr_Output__arr_bool_uint_4 Output
+  %main = OpFunction %void None %21
+    %23 = OpLabel
+    %24 = OpLoad %uint %gl_LocalInvocationIndex
+          OpSetMeshOutputsEXT %uint_2 %uint_2
+    %25 = OpAccessChain %_ptr_Output_bool %5 %24
+          OpStore %25 %false
+          OpReturn
+          OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-CullPrimitiveEXT-CullPrimitiveEXT-10589"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinCullPrimitiveEXTInterfaceVariable) {
+  const std::string text = R"(
+         OpCapability MeshShadingEXT
+         OpExtension "SPV_EXT_mesh_shader"
+         OpMemoryModel Logical GLSL450
+         OpEntryPoint MeshEXT %main "main" %gl_LocalInvocationIndex %gl_Position %4 %5 %gl_MeshPrimitivesEXT
+         OpExecutionMode %main LocalSize 2 1 1
+         OpExecutionMode %main OutputTrianglesEXT
+         OpExecutionMode %main OutputVertices 2
+         OpExecutionMode %main OutputPrimitivesEXT 2
+         OpDecorate %gl_LocalInvocationIndex BuiltIn LocalInvocationIndex
+         OpDecorate %gl_Position BuiltIn Position
+         OpDecorate %4 BuiltIn PrimitiveTriangleIndicesEXT
+         OpDecorate %5 BuiltIn CullPrimitiveEXT
+         OpDecorate %5 PerPrimitiveEXT
+         OpDecorate %gl_MeshPerPrimitiveEXT Block
+         OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn CullPrimitiveEXT
+         OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+ %uint = OpTypeInt 32 0
+%uint_2 = OpConstant %uint 2
+ %bool = OpTypeBool
+%false = OpConstantFalse %bool
+%_ptr_Input_uint = OpTypePointer Input %uint
+%float = OpTypeFloat 32
+%v4float = OpTypeVector %float 4
+%_arr_v4float_uint_2 = OpTypeArray %v4float %uint_2
+%_ptr_Output__arr_v4float_uint_2 = OpTypePointer Output %_arr_v4float_uint_2
+%v3uint = OpTypeVector %uint 3
+%_arr_v3uint_uint_2 = OpTypeArray %v3uint %uint_2
+%_ptr_Output__arr_v3uint_uint_2 = OpTypePointer Output %_arr_v3uint_uint_2
+%_arr_bool_uint_2 = OpTypeArray %bool %uint_2
+%_ptr_Output__arr_bool_uint_2 = OpTypePointer Output %_arr_bool_uint_2
+ %void = OpTypeVoid
+   %21 = OpTypeFunction %void
+%_ptr_Output_bool = OpTypePointer Output %bool
+%gl_LocalInvocationIndex = OpVariable %_ptr_Input_uint Input
+%gl_Position = OpVariable %_ptr_Output__arr_v4float_uint_2 Output
+    %4 = OpVariable %_ptr_Output__arr_v3uint_uint_2 Output
+    %5 = OpVariable %_ptr_Output__arr_bool_uint_2 Output
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %bool
+%_arr_gl_MeshPerPrimitiveEXT_uint_2 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_2
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_2 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_2
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_2 Output
+ %main = OpFunction %void None %21
+   %23 = OpLabel
+%ref_load = OpLoad %_arr_gl_MeshPerPrimitiveEXT_uint_2 %gl_MeshPrimitivesEXT
+   %24 = OpLoad %uint %gl_LocalInvocationIndex
+         OpSetMeshOutputsEXT %uint_2 %uint_2
+   %25 = OpAccessChain %_ptr_Output_bool %5 %24
+         OpStore %25 %false
+         OpReturn
+         OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-CullPrimitiveEXT-CullPrimitiveEXT-10591"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinCullPrimitiveEXTStorageClass) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+      OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_CullPrimitiveEXT"
+      OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+      OpDecorate %gl_MeshPerPrimitiveEXT Block
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn CullPrimitiveEXT
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %bool
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Input %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Input
+%main = OpFunction %void None %3
+ %5 = OpLabel
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-CullPrimitiveEXT-CullPrimitiveEXT-07035"));
+}
+
+TEST_F(ValidateBuiltIns, BadBuiltinCullPrimitiveEXTWithPerPrimitiveEXT) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+      OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_CullPrimitiveEXT"
+      OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+      OpDecorate %gl_MeshPerPrimitiveEXT Block
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn CullPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %bool
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+ %ref_load = OpLoad %_arr_gl_MeshPerPrimitiveEXT_uint_32 %gl_MeshPrimitivesEXT
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-CullPrimitiveEXT-CullPrimitiveEXT-07038"));
+}
+
+TEST_F(ValidateBuiltIns, BadBuiltinPrimitiveShadingRateWithPerPrimitiveEXT) {
+  const std::string text = R"(
+      OpCapability FragmentShadingRateKHR
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+      OpExtension "SPV_KHR_fragment_shading_rate"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+      OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_PrimitiveShadingRateKHR"
+      OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+      OpDecorate %gl_MeshPerPrimitiveEXT Block
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn PrimitiveShadingRateKHR
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %int
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+%ref_load = OpLoad %_arr_gl_MeshPerPrimitiveEXT_uint_32 %gl_MeshPrimitivesEXT
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      AnyVUID("VUID-PrimitiveShadingRateKHR-PrimitiveShadingRateKHR-07059"));
+}
+
+TEST_F(ValidateBuiltIns, BadExecModelVulkanCullPrimitiveEXT) {
+  const std::string text = R"(
+         OpCapability MeshShadingNV
+         OpCapability MeshShadingEXT
+         OpExtension "SPV_NV_mesh_shader"
+         OpExtension "SPV_EXT_mesh_shader"
+    %1 = OpExtInstImport "GLSL.std.450"
+         OpMemoryModel Logical GLSL450
+         OpEntryPoint MeshNV %main "main" %gl_MeshPrimitivesEXT
+         OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+         OpExecutionMode %main OutputVertices 81
+         OpExecutionMode %main OutputPrimitivesNV 32
+         OpExecutionMode %main OutputTrianglesNV
+         OpSource GLSL 450
+         OpSourceExtension "GL_EXT_mesh_shader"
+         OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+         OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn CullPrimitiveEXT
+         OpDecorate %gl_MeshPerPrimitiveEXT Block
+ %void = OpTypeVoid
+    %3 = OpTypeFunction %void
+ %uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%v3uint = OpTypeVector %uint 3
+ %bool = OpTypeBool
+  %int = OpTypeInt 32 1
+%int_0 = OpConstant %int 0
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %bool
+%_ptr_Output_bool = OpTypePointer Output %bool
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+ %main = OpFunction %void None %3
+    %5 = OpLabel
+   %18 = OpAccessChain %_ptr_Output_bool %gl_MeshPrimitivesEXT %int_0 %int_0
+         OpReturn
+         OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-CullPrimitiveEXT-CullPrimitiveEXT-07034"));
+}
+
+TEST_F(ValidateBuiltIns, VulkanBuiltinLayerInBlockMeshEXT) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+      OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_Layer"
+      OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+      OpDecorate %gl_MeshPerPrimitiveEXT Block
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn Layer
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %int
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateBuiltIns, VulkanBuiltinLayerAsArrayOfIntMeshEXT) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_Layer
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpDecorate %gl_Layer BuiltIn Layer
+      OpDecorate %gl_Layer PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%_arr_gl_Layer_uint_32 = OpTypeArray %int %uint_32
+%_ptr_Output__arr_gl_Layer_uint_32 = OpTypePointer Output %_arr_gl_Layer_uint_32
+%gl_Layer = OpVariable %_ptr_Output__arr_gl_Layer_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinLayerArrayTypeMeshEXT) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_Layer
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpDecorate %gl_Layer BuiltIn Layer
+      OpDecorate %gl_Layer PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%_arr_gl_Layer_uint_32 = OpTypeArray %bool %uint_32
+%_ptr_Output__arr_gl_Layer_uint_32 = OpTypePointer Output %_arr_gl_Layer_uint_32
+%gl_Layer = OpVariable %_ptr_Output__arr_gl_Layer_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+%ref_load = OpLoad %_arr_gl_Layer_uint_32 %gl_Layer
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(), AnyVUID("VUID-Layer-Layer-10592"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinLayerInBlockMeshEXTType) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+      OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_Layer"
+      OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+      OpDecorate %gl_MeshPerPrimitiveEXT Block
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn Layer
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %bool
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+ %ref_load = OpLoad %_arr_gl_MeshPerPrimitiveEXT_uint_32 %gl_MeshPrimitivesEXT
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(), AnyVUID("VUID-Layer-Layer-10592"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinLayerArrayOfIntSizeMeshEXT) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_Layer
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 16
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpDecorate %gl_Layer BuiltIn Layer
+      OpDecorate %gl_Layer PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%_arr_gl_Layer_uint_32 = OpTypeArray %int %uint_32
+%_ptr_Output__arr_gl_Layer_uint_32 = OpTypePointer Output %_arr_gl_Layer_uint_32
+%gl_Layer = OpVariable %_ptr_Output__arr_gl_Layer_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+%ref_load = OpLoad %_arr_gl_Layer_uint_32 %gl_Layer
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(), AnyVUID("VUID-Layer-Layer-10593"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinLayerInBlockArraySizeMeshEXT) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 16
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+      OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_Layer"
+      OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+      OpDecorate %gl_MeshPerPrimitiveEXT Block
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn Layer
+      OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %int
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+%ref_load = OpLoad %_arr_gl_MeshPerPrimitiveEXT_uint_32 %gl_MeshPrimitivesEXT
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(), AnyVUID("VUID-Layer-Layer-10594"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinLayerWithPerPrimitiveEXT) {
+  const std::string text = R"(
+          OpCapability MeshShadingEXT
+          OpCapability Shader
+          OpExtension "SPV_EXT_mesh_shader"
+          OpMemoryModel Logical GLSL450
+          OpEntryPoint MeshEXT %MainMesh "MainMesh" %gl_Layer
+          OpExecutionMode %MainMesh OutputPrimitivesNV 1
+          OpExecutionMode %MainMesh OutputVertices 3
+          OpExecutionMode %MainMesh OutputTrianglesNV
+          OpExecutionMode %MainMesh LocalSize 1 1 1
+          OpSource Slang 1
+          OpName %MainMesh "MainMesh"
+          OpDecorate %gl_Layer BuiltIn Layer
+  %void = OpTypeVoid
+     %9 = OpTypeFunction %void
+  %uint = OpTypeInt 32 0
+%uint_3 = OpConstant %uint 3
+%uint_1 = OpConstant %uint 1
+ %float = OpTypeFloat 32
+   %int = OpTypeInt 32 1
+ %int_1 = OpConstant %int 1
+ %int_3 = OpConstant %int 3
+%uint_0 = OpConstant %uint 0
+%v3float = OpTypeVector %float 3
+%_ptr_Output_v3float = OpTypePointer Output %v3float
+%v3uint = OpTypeVector %uint 3
+%_ptr_Output_v3uint = OpTypePointer Output %v3uint
+%_ptr_Output_int = OpTypePointer Output %int
+%_arr_int_int_1 = OpTypeArray %int %int_1
+%_ptr_Output__arr_int_int_1 = OpTypePointer Output %_arr_int_int_1
+%gl_Layer = OpVariable %_ptr_Output__arr_int_int_1 Output
+%MainMesh = OpFunction %void None %9
+    %25 = OpLabel
+%ref_load = OpLoad %_arr_int_int_1 %gl_Layer
+          OpSetMeshOutputsEXT %uint_3 %uint_1
+          OpReturn
+          OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(), AnyVUID("VUID-Layer-Layer-07039"));
+}
+
+TEST_F(ValidateBuiltIns, VulkanBuiltinPrimitiveShadingRateKHRInBlockMeshEXT) {
+  const std::string text = R"(
+    OpCapability FragmentShadingRateKHR
+    OpCapability MeshShadingEXT
+    OpExtension "SPV_EXT_mesh_shader"
+    OpExtension "SPV_KHR_fragment_shading_rate"
+%1 = OpExtInstImport "GLSL.std.450"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+    OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+    OpExecutionMode %main OutputVertices 81
+    OpExecutionMode %main OutputPrimitivesEXT 32
+    OpExecutionMode %main OutputTrianglesEXT
+    OpSource GLSL 450
+    OpSourceExtension "GL_EXT_mesh_shader"
+    OpName %main "main"
+    OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+    OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_PrimitiveShadingRateEXT"
+    OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+    OpDecorate %gl_MeshPerPrimitiveEXT Block
+    OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn PrimitiveShadingRateKHR
+    OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %int
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+%5 = OpLabel
+    OpReturn
+    OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateBuiltIns,
+       VulkanBuiltinPrimitiveShadingRateKHRInArrayOfIntMeshEXT) {
+  const std::string text = R"(
+      OpCapability FragmentShadingRateKHR
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+      OpExtension "SPV_KHR_fragment_shading_rate"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_PrimitiveShadingRateEXT
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_PrimitiveShadingRateEXT "gl_PrimitiveShadingRateEXT"
+      OpDecorate %gl_PrimitiveShadingRateEXT BuiltIn PrimitiveShadingRateKHR
+      OpDecorate %gl_PrimitiveShadingRateEXT PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%int = OpTypeInt 32 1
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%uint_0 = OpConstant %uint 0
+%int_0 = OpConstant %int 0
+%bool = OpTypeBool
+%_arr_gl_PrimitiveShadingRateEXT_uint_32 = OpTypeArray %int %uint_32
+%_ptr_Output__arr_gl_PrimitiveShadingRateEXT_uint_32 = OpTypePointer Output %_arr_gl_PrimitiveShadingRateEXT_uint_32
+%gl_PrimitiveShadingRateEXT = OpVariable %_ptr_Output__arr_gl_PrimitiveShadingRateEXT_uint_32 Output
+%uint_ptr = OpTypePointer Output %int
+%main = OpFunction %void None %3
+ %5 = OpLabel
+      %21 = OpAccessChain %uint_ptr %gl_PrimitiveShadingRateEXT %uint_0
+      OpStore %21 %int_0
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateBuiltIns,
+       BadVulkanBuiltinPrimitiveShadingRateKHRInArrayTypeMeshEXT) {
+  const std::string text = R"(
+      OpCapability FragmentShadingRateKHR
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+      OpExtension "SPV_KHR_fragment_shading_rate"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_PrimitiveShadingRateEXT
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_PrimitiveShadingRateEXT "gl_PrimitiveShadingRateEXT"
+      OpDecorate %gl_PrimitiveShadingRateEXT BuiltIn PrimitiveShadingRateKHR
+      OpDecorate %gl_PrimitiveShadingRateEXT PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%_arr_gl_PrimitiveShadingRateEXT_uint_32 = OpTypeArray %bool %uint_32
+%_ptr_Output__arr_gl_PrimitiveShadingRateEXT_uint_32 = OpTypePointer Output %_arr_gl_PrimitiveShadingRateEXT_uint_32
+%gl_PrimitiveShadingRateEXT = OpVariable %_ptr_Output__arr_gl_PrimitiveShadingRateEXT_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+ %ref_load = OpLoad %_arr_gl_PrimitiveShadingRateEXT_uint_32 %gl_PrimitiveShadingRateEXT
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      AnyVUID("VUID-PrimitiveShadingRateKHR-PrimitiveShadingRateKHR-10598"));
+}
+
+TEST_F(ValidateBuiltIns,
+       BadVulkanBuiltinPrimitiveShadingRateKHRInBlockTypeMeshEXT) {
+  const std::string text = R"(
+    OpCapability FragmentShadingRateKHR
+    OpCapability MeshShadingEXT
+    OpExtension "SPV_EXT_mesh_shader"
+    OpExtension "SPV_KHR_fragment_shading_rate"
+%1 = OpExtInstImport "GLSL.std.450"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+    OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+    OpExecutionMode %main OutputVertices 81
+    OpExecutionMode %main OutputPrimitivesEXT 32
+    OpExecutionMode %main OutputTrianglesEXT
+    OpSource GLSL 450
+    OpSourceExtension "GL_EXT_mesh_shader"
+    OpName %main "main"
+    OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+    OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_PrimitiveShadingRateEXT"
+    OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+    OpDecorate %gl_MeshPerPrimitiveEXT Block
+    OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn PrimitiveShadingRateKHR
+    OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %bool
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+%5 = OpLabel
+%ref_load = OpLoad %_arr_gl_MeshPerPrimitiveEXT_uint_32 %gl_MeshPrimitivesEXT
+    OpReturn
+    OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      AnyVUID("VUID-PrimitiveShadingRateKHR-PrimitiveShadingRateKHR-10598"));
+}
+
+TEST_F(ValidateBuiltIns,
+       BadVulkanBuiltinPrimitiveShadingRateKHRInBlockSizeMeshEXT) {
+  const std::string text = R"(
+    OpCapability FragmentShadingRateKHR
+    OpCapability MeshShadingEXT
+    OpExtension "SPV_EXT_mesh_shader"
+    OpExtension "SPV_KHR_fragment_shading_rate"
+%1 = OpExtInstImport "GLSL.std.450"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+    OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+    OpExecutionMode %main OutputVertices 81
+    OpExecutionMode %main OutputPrimitivesEXT 16
+    OpExecutionMode %main OutputTrianglesEXT
+    OpSource GLSL 450
+    OpSourceExtension "GL_EXT_mesh_shader"
+    OpName %main "main"
+    OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+    OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_PrimitiveShadingRateEXT"
+    OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+    OpDecorate %gl_MeshPerPrimitiveEXT Block
+    OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn PrimitiveShadingRateKHR
+    OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %int
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+%5 = OpLabel
+%ref_load = OpLoad %_arr_gl_MeshPerPrimitiveEXT_uint_32 %gl_MeshPrimitivesEXT
+    OpReturn
+    OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      AnyVUID("VUID-PrimitiveShadingRateKHR-PrimitiveShadingRateKHR-10600"));
+}
+
+TEST_F(ValidateBuiltIns,
+       BadVulkanBuiltinPrimitiveShadingRateKHRInArraySizeMeshEXT) {
+  const std::string text = R"(
+      OpCapability FragmentShadingRateKHR
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+      OpExtension "SPV_KHR_fragment_shading_rate"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_PrimitiveShadingRateEXT
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 16
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_PrimitiveShadingRateEXT "gl_PrimitiveShadingRateEXT"
+      OpDecorate %gl_PrimitiveShadingRateEXT BuiltIn PrimitiveShadingRateKHR
+      OpDecorate %gl_PrimitiveShadingRateEXT PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%_arr_gl_PrimitiveShadingRateEXT_uint_32 = OpTypeArray %int %uint_32
+%_ptr_Output__arr_gl_PrimitiveShadingRateEXT_uint_32 = OpTypePointer Output %_arr_gl_PrimitiveShadingRateEXT_uint_32
+%gl_PrimitiveShadingRateEXT = OpVariable %_ptr_Output__arr_gl_PrimitiveShadingRateEXT_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+%ref_load = OpLoad %_arr_gl_PrimitiveShadingRateEXT_uint_32 %gl_PrimitiveShadingRateEXT
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      AnyVUID("VUID-PrimitiveShadingRateKHR-PrimitiveShadingRateKHR-10599"));
+}
+
+TEST_F(ValidateBuiltIns, VulkanBuiltinViewportIndexInBlockMeshEXT) {
+  const std::string text = R"(
+    OpCapability MeshShadingEXT
+    OpExtension "SPV_EXT_mesh_shader"
+%1 = OpExtInstImport "GLSL.std.450"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+    OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+    OpExecutionMode %main OutputVertices 81
+    OpExecutionMode %main OutputPrimitivesEXT 32
+    OpExecutionMode %main OutputTrianglesEXT
+    OpSource GLSL 450
+    OpSourceExtension "GL_EXT_mesh_shader"
+    OpName %main "main"
+    OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+    OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_ViewportIndex"
+    OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+    OpDecorate %gl_MeshPerPrimitiveEXT Block
+    OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn ViewportIndex
+    OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %int
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+%5 = OpLabel
+    OpReturn
+    OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateBuiltIns, VulkanBuiltinViewportIndexAsArrayOfIntMeshEXT) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_ViewportIndex
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_ViewportIndex "gl_ViewportIndex"
+      OpDecorate %gl_ViewportIndex BuiltIn ViewportIndex
+      OpDecorate %gl_ViewportIndex PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%_arr_gl_ViewportIndex_uint_32 = OpTypeArray %int %uint_32
+%_ptr_Output__arr_gl_ViewportIndex_uint_32 = OpTypePointer Output %_arr_gl_ViewportIndex_uint_32
+%gl_ViewportIndex = OpVariable %_ptr_Output__arr_gl_ViewportIndex_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinViewportIndexInBlockTypeMeshEXT) {
+  const std::string text = R"(
+    OpCapability MeshShadingEXT
+    OpExtension "SPV_EXT_mesh_shader"
+%1 = OpExtInstImport "GLSL.std.450"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+    OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+    OpExecutionMode %main OutputVertices 81
+    OpExecutionMode %main OutputPrimitivesEXT 32
+    OpExecutionMode %main OutputTrianglesEXT
+    OpSource GLSL 450
+    OpSourceExtension "GL_EXT_mesh_shader"
+    OpName %main "main"
+    OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+    OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_ViewportIndex"
+    OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+    OpDecorate %gl_MeshPerPrimitiveEXT Block
+    OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn ViewportIndex
+    OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %bool
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+%5 = OpLabel
+%ref_load = OpLoad %_arr_gl_MeshPerPrimitiveEXT_uint_32 %gl_MeshPrimitivesEXT
+    OpReturn
+    OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-ViewportIndex-ViewportIndex-10601"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinViewportIndexAsArrayTypeMeshEXT) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_ViewportIndex
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 32
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_ViewportIndex "gl_ViewportIndex"
+      OpDecorate %gl_ViewportIndex BuiltIn ViewportIndex
+      OpDecorate %gl_ViewportIndex PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%_arr_gl_ViewportIndex_uint_32 = OpTypeArray %bool %uint_32
+%_ptr_Output__arr_gl_ViewportIndex_uint_32 = OpTypePointer Output %_arr_gl_ViewportIndex_uint_32
+%gl_ViewportIndex = OpVariable %_ptr_Output__arr_gl_ViewportIndex_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+%ref_load = OpLoad %_arr_gl_ViewportIndex_uint_32 %gl_ViewportIndex
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-ViewportIndex-ViewportIndex-10601"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinViewportIndexInBlockArraySizeMeshEXT) {
+  const std::string text = R"(
+    OpCapability MeshShadingEXT
+    OpExtension "SPV_EXT_mesh_shader"
+%1 = OpExtInstImport "GLSL.std.450"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+    OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+    OpExecutionMode %main OutputVertices 81
+    OpExecutionMode %main OutputPrimitivesEXT 16
+    OpExecutionMode %main OutputTrianglesEXT
+    OpSource GLSL 450
+    OpSourceExtension "GL_EXT_mesh_shader"
+    OpName %main "main"
+    OpName %gl_MeshPerPrimitiveEXT "gl_MeshPerPrimitiveEXT"
+    OpMemberName %gl_MeshPerPrimitiveEXT 0 "gl_ViewportIndex"
+    OpName %gl_MeshPrimitivesEXT "gl_MeshPrimitivesEXT"
+    OpDecorate %gl_MeshPerPrimitiveEXT Block
+    OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn ViewportIndex
+    OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %int
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%main = OpFunction %void None %3
+%5 = OpLabel
+%ref_load = OpLoad %_arr_gl_MeshPerPrimitiveEXT_uint_32 %gl_MeshPrimitivesEXT
+    OpReturn
+    OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-ViewportIndex-ViewportIndex-10603"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinViewportIndexAsArrayOfIntSizeMeshEXT) {
+  const std::string text = R"(
+      OpCapability MeshShadingEXT
+      OpExtension "SPV_EXT_mesh_shader"
+ %1 = OpExtInstImport "GLSL.std.450"
+      OpMemoryModel Logical GLSL450
+      OpEntryPoint MeshEXT %main "main" %gl_ViewportIndex
+      OpExecutionModeId %main LocalSizeId %uint_32 %uint_1 %uint_1
+      OpExecutionMode %main OutputVertices 81
+      OpExecutionMode %main OutputPrimitivesEXT 16
+      OpExecutionMode %main OutputTrianglesEXT
+      OpSource GLSL 450
+      OpSourceExtension "GL_EXT_mesh_shader"
+      OpName %main "main"
+      OpName %gl_ViewportIndex "gl_ViewportIndex"
+      OpDecorate %gl_ViewportIndex BuiltIn ViewportIndex
+      OpDecorate %gl_ViewportIndex PerPrimitiveEXT
+%void = OpTypeVoid
+ %3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_32 = OpConstant %uint 32
+%uint_1 = OpConstant %uint 1
+%int = OpTypeInt 32 1
+%bool = OpTypeBool
+%_arr_gl_ViewportIndex_uint_32 = OpTypeArray %int %uint_32
+%_ptr_Output__arr_gl_ViewportIndex_uint_32 = OpTypePointer Output %_arr_gl_ViewportIndex_uint_32
+%gl_ViewportIndex = OpVariable %_ptr_Output__arr_gl_ViewportIndex_uint_32 Output
+%main = OpFunction %void None %3
+ %5 = OpLabel
+%ref_load = OpLoad %_arr_gl_ViewportIndex_uint_32 %gl_ViewportIndex
+      OpReturn
+      OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-ViewportIndex-ViewportIndex-10602"));
+}
+
+TEST_F(ValidateBuiltIns, BadVulkanBuiltinPrimitiveIdFragmentWithRayTracing) {
+  const std::string text = R"(
+          OpCapability Shader
+          OpCapability RayTracingKHR
+          OpExtension "SPV_KHR_ray_tracing"
+          OpMemoryModel Logical GLSL450
+          OpEntryPoint Fragment %main "main" %outVar %gl_PrimitiveID
+          OpExecutionMode %main OriginUpperLeft
+          OpDecorate %outVar Location 0
+          OpDecorate %gl_PrimitiveID BuiltIn PrimitiveId
+          OpDecorate %gl_PrimitiveID Flat
+  %void = OpTypeVoid
+     %4 = OpTypeFunction %void
+   %int = OpTypeInt 32 1
+ %v4int = OpTypeVector %int 4
+%ptrOut = OpTypePointer Output %v4int
+%outVar = OpVariable %ptrOut Output
+ %ptrIn = OpTypePointer Input %int
+%gl_PrimitiveID = OpVariable %ptrIn Input
+  %main = OpFunction %void None %4
+     %6 = OpLabel
+    %13 = OpLoad %int %gl_PrimitiveID
+    %14 = OpCompositeConstruct %v4int %13 %13 %13 %13
+          OpStore %outVar %14
+          OpReturn
+          OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-PrimitiveId-Fragment-04333"));
+}
+
+TEST_F(ValidateBuiltIns, TessellationMissingPatch) {
+  const std::string spirv = R"(
+               OpCapability Tessellation
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint TessellationControl %main "main" %gl_TessLevelInner %gl_TessLevelOuter
+               OpExecutionMode %main OutputVertices 3
+               OpDecorate %gl_TessLevelInner BuiltIn TessLevelInner
+               OpDecorate %gl_TessLevelOuter BuiltIn TessLevelOuter
+               OpDecorate %gl_TessLevelOuter Patch
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+       %uint = OpTypeInt 32 0
+     %uint_2 = OpConstant %uint 2
+%_arr_float_uint_2 = OpTypeArray %float %uint_2
+%_ptr_Output__arr_float_uint_2 = OpTypePointer Output %_arr_float_uint_2
+%gl_TessLevelInner = OpVariable %_ptr_Output__arr_float_uint_2 Output
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+    %float_1 = OpConstant %float 1
+%_ptr_Output_float = OpTypePointer Output %float
+     %uint_4 = OpConstant %uint 4
+%_arr_float_uint_4 = OpTypeArray %float %uint_4
+%_ptr_Output__arr_float_uint_4 = OpTypePointer Output %_arr_float_uint_4
+%gl_TessLevelOuter = OpVariable %_ptr_Output__arr_float_uint_4 Output
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+         %17 = OpAccessChain %_ptr_Output_float %gl_TessLevelInner %int_0
+               OpStore %17 %float_1
+         %22 = OpAccessChain %_ptr_Output_float %gl_TessLevelOuter %int_0
+               OpStore %22 %float_1
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_0);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("BuiltIn TessLevelInner variable needs to also have a "
+                        "Patch decoration"));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-TessLevelInner-10880"));
+}
+
+// From dEQP-VK.mesh_shader.ext.builtin.primitive_id_spirv
+TEST_F(ValidateBuiltIns, PrimitiveIdInFragmentWithMeshCapability) {
+  const std::string spirv = R"(
+               OpCapability Shader
+               OpCapability MeshShadingEXT
+               OpExtension "SPV_EXT_mesh_shader"
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %4 "main" %9 %gl_PrimitiveID
+               OpExecutionMode %4 OriginUpperLeft
+               OpDecorate %9 Location 0
+               OpDecorate %gl_PrimitiveID Flat
+               OpDecorate %gl_PrimitiveID BuiltIn PrimitiveId
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+          %9 = OpVariable %_ptr_Output_v4float Output
+        %int = OpTypeInt 32 1
+%_ptr_Input_int = OpTypePointer Input %int
+%gl_PrimitiveID = OpVariable %_ptr_Input_int Input
+%int_1629198956 = OpConstant %int 1629198956
+       %bool = OpTypeBool
+    %float_0 = OpConstant %float 0
+    %float_1 = OpConstant %float 1
+         %19 = OpConstantComposite %v4float %float_0 %float_0 %float_1 %float_1
+         %20 = OpConstantComposite %v4float %float_0 %float_0 %float_0 %float_1
+     %v4bool = OpTypeVector %bool 4
+          %4 = OpFunction %void None %3
+          %5 = OpLabel
+         %13 = OpLoad %int %gl_PrimitiveID
+         %16 = OpIEqual %bool %13 %int_1629198956
+         %22 = OpCompositeConstruct %v4bool %16 %16 %16 %16
+         %23 = OpSelect %v4float %22 %19 %20
+               OpStore %9 %23
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+// https://github.com/KhronosGroup/SPIRV-Tools/issues/6237
+TEST_F(ValidateBuiltIns, MeshBuiltinUnsignedInt) {
+  const std::string spirv = R"(
+               OpCapability FragmentShadingRateKHR
+               OpCapability MeshShadingEXT
+               OpExtension "SPV_EXT_mesh_shader"
+               OpExtension "SPV_KHR_fragment_shading_rate"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint MeshEXT %main "main" %gl_MeshPrimitivesEXT
+               OpExecutionModeId %main LocalSizeId %uint_1 %uint_1 %uint_1
+               OpExecutionMode %main OutputVertices 81
+               OpExecutionMode %main OutputPrimitivesEXT 32
+               OpExecutionMode %main OutputTrianglesEXT
+               OpDecorate %gl_MeshPerPrimitiveEXT Block
+               OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 BuiltIn PrimitiveId
+               OpMemberDecorate %gl_MeshPerPrimitiveEXT 0 PerPrimitiveEXT
+               OpMemberDecorate %gl_MeshPerPrimitiveEXT 1 BuiltIn Layer
+               OpMemberDecorate %gl_MeshPerPrimitiveEXT 1 PerPrimitiveEXT
+               OpMemberDecorate %gl_MeshPerPrimitiveEXT 2 BuiltIn ViewportIndex
+               OpMemberDecorate %gl_MeshPerPrimitiveEXT 2 PerPrimitiveEXT
+               OpMemberDecorate %gl_MeshPerPrimitiveEXT 3 BuiltIn CullPrimitiveEXT
+               OpMemberDecorate %gl_MeshPerPrimitiveEXT 3 PerPrimitiveEXT
+               OpMemberDecorate %gl_MeshPerPrimitiveEXT 4 BuiltIn PrimitiveShadingRateKHR
+               OpMemberDecorate %gl_MeshPerPrimitiveEXT 4 PerPrimitiveEXT
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+        %int = OpTypeInt 32 1
+       %bool = OpTypeBool
+      %int_0 = OpConstant %int 0
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+     %uint_2 = OpConstant %uint 2
+     %uint_3 = OpConstant %uint 3
+     %uint_4 = OpConstant %uint 4
+    %uint_81 = OpConstant %uint 81
+    %uint_32 = OpConstant %uint 32
+%gl_MeshPerPrimitiveEXT = OpTypeStruct %uint %uint %uint %bool %uint
+%_arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypeArray %gl_MeshPerPrimitiveEXT %uint_32
+%_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 = OpTypePointer Output %_arr_gl_MeshPerPrimitiveEXT_uint_32
+%gl_MeshPrimitivesEXT = OpVariable %_ptr_Output__arr_gl_MeshPerPrimitiveEXT_uint_32 Output
+%_ptr_Output_uint = OpTypePointer Output %uint
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+               OpSetMeshOutputsEXT %uint_81 %uint_32
+         %20 = OpAccessChain %_ptr_Output_uint %gl_MeshPrimitivesEXT %int_0 %uint_0
+               OpStore %20 %uint_1
+         %22 = OpAccessChain %_ptr_Output_uint %gl_MeshPrimitivesEXT %int_0 %uint_1
+               OpStore %22 %uint_2
+         %24 = OpAccessChain %_ptr_Output_uint %gl_MeshPrimitivesEXT %int_0 %uint_2
+               OpStore %24 %uint_3
+         %26 = OpAccessChain %_ptr_Output_uint %gl_MeshPrimitivesEXT %int_0 %uint_4
+               OpStore %26 %uint_4
+               OpReturn
+               OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+}
+
+TEST_F(ValidateBuiltIns, HitTriangleVertexPositionExecutionModel) {
+  const std::string spirv = R"(
+                OpCapability RayTracingKHR
+               OpCapability RayTracingPositionFetchKHR
+               OpExtension "SPV_KHR_ray_tracing"
+               OpExtension "SPV_KHR_ray_tracing_position_fetch"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint IntersectionKHR %main "main" %gl_HitTriangleVertexPositionsEXT
+               OpDecorate %gl_HitTriangleVertexPositionsEXT BuiltIn HitTriangleVertexPositionsKHR
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v3float = OpTypeVector %float 3
+%_ptr_Function_v3float = OpTypePointer Function %v3float
+       %uint = OpTypeInt 32 0
+     %uint_3 = OpConstant %uint 3
+%_arr_v3float_uint_3 = OpTypeArray %v3float %uint_3
+%_ptr_Input__arr_v3float_uint_3 = OpTypePointer Input %_arr_v3float_uint_3
+%gl_HitTriangleVertexPositionsEXT = OpVariable %_ptr_Input__arr_v3float_uint_3 Input
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_Input_v3float = OpTypePointer Input %v3float
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+        %v19 = OpVariable %_ptr_Function_v3float Function
+         %18 = OpAccessChain %_ptr_Input_v3float %gl_HitTriangleVertexPositionsEXT %int_0
+         %19 = OpLoad %v3float %18
+               OpStore %v19 %19
+               OpTerminateRayKHR
+               OpFunctionEnd
+)";
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "Vulkan spec does not allow BuiltIn HitTriangleVertexPositionsKHR to "
+          "be used with the execution model IntersectionKHR"));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-HitTriangleVertexPositionsKHR-"
+                      "HitTriangleVertexPositionsKHR-08747"));
+}
+
+TEST_F(ValidateBuiltIns, HitTriangleVertexPositionType) {
+  const std::string spirv = R"(
+                OpCapability RayTracingKHR
+               OpCapability RayTracingPositionFetchKHR
+               OpExtension "SPV_KHR_ray_tracing"
+               OpExtension "SPV_KHR_ray_tracing_position_fetch"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint AnyHitKHR %main "main" %gl_HitTriangleVertexPositionsEXT
+               OpDecorate %gl_HitTriangleVertexPositionsEXT BuiltIn HitTriangleVertexPositionsKHR
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v3float = OpTypeVector %float 3
+%_ptr_Function_v3float = OpTypePointer Function %v3float
+       %uint = OpTypeInt 32 0
+     %uint_4 = OpConstant %uint 4
+%_arr_v3float_uint_4 = OpTypeArray %v3float %uint_4
+%_ptr_Input__arr_v3float_uint_4 = OpTypePointer Input %_arr_v3float_uint_4
+%gl_HitTriangleVertexPositionsEXT = OpVariable %_ptr_Input__arr_v3float_uint_4 Input
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_Input_v3float = OpTypePointer Input %v3float
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+        %v19 = OpVariable %_ptr_Function_v3float Function
+         %18 = OpAccessChain %_ptr_Input_v3float %gl_HitTriangleVertexPositionsEXT %int_0
+         %19 = OpLoad %v3float %18
+               OpStore %v19 %19
+               OpTerminateRayKHR
+               OpFunctionEnd
+)";
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_3));
+  EXPECT_THAT(getDiagnosticString(), HasSubstr("array length must be 3"));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-HitTriangleVertexPositionsKHR-"
+                      "HitTriangleVertexPositionsKHR-08749"));
+}
+
+TEST_F(ValidateBuiltIns, TileOffsetRequiresFragmentOrGLComputeExecutionModel) {
+  const std::string spirv = R"(
+               OpCapability Shader
+               OpExtension "SPV_QCOM_tile_shading"
+          %2 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Vertex %main "main" %gl_TileOffsetQCOM
+               OpExecutionMode %main OriginUpperLeft
+               OpDecorate %gl_TileOffsetQCOM BuiltIn TileOffsetQCOM
+               OpDecorate %gl_TileOffsetQCOM Flat
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %v2uint = OpTypeVector %uint 2
+%_ptr_Function_v2uint = OpTypePointer Function %v2uint
+%_ptr_Input_v2uint = OpTypePointer Input %v2uint
+%gl_TileOffsetQCOM = OpVariable %_ptr_Input_v2uint Input
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+ %tileOffset = OpVariable %_ptr_Function_v2uint Function
+         %13 = OpLoad %v2uint %gl_TileOffsetQCOM
+               OpStore %tileOffset %13
+               OpReturn
+               OpFunctionEnd
+)";
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_4);
+  EXPECT_EQ(SPV_ERROR_INVALID_CAPABILITY,
+            ValidateInstructions(SPV_ENV_VULKAN_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("requires one of these capabilities: TileShadingQCOM"));
+}
+
+TEST_F(ValidateBuiltIns, TileOffsetRequiresInputStorageClass) {
+  const std::string spirv = R"(
+               OpCapability Shader
+               OpCapability TileShadingQCOM
+               OpExtension "SPV_QCOM_tile_shading"
+          %2 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %gl_TileOffsetQCOM
+               OpExecutionMode %main OriginUpperLeft
+               OpDecorate %gl_TileOffsetQCOM BuiltIn TileOffsetQCOM
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %v2uint = OpTypeVector %uint 2
+%_ptr_Output_v2uint = OpTypePointer Output %v2uint
+%gl_TileOffsetQCOM = OpVariable %_ptr_Output_v2uint Output
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+               OpReturn
+               OpFunctionEnd
+)";
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_4);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-TileOffsetQCOM-TileOffsetQCOM-10627"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Vulkan spec allows BuiltIn TileOffsetQCOM to be "
+                        "only used for variables with Input storage class."));
+}
+
+TEST_F(ValidateBuiltIns,
+       TileOffsetRequiresTwoComponent32BitUnsignedIntegerVector) {
+  const std::string spirv = R"(
+               OpCapability Shader
+               OpCapability TileShadingQCOM
+               OpExtension "SPV_QCOM_tile_shading"
+          %2 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %gl_TileOffsetQCOM
+               OpExecutionMode %main OriginUpperLeft
+               OpDecorate %gl_TileOffsetQCOM BuiltIn TileOffsetQCOM
+               OpDecorate %gl_TileOffsetQCOM Flat
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %v3uint = OpTypeVector %uint 3
+%_ptr_Function_v3uint = OpTypePointer Function %v3uint
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gl_TileOffsetQCOM = OpVariable %_ptr_Input_v3uint Input
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+ %tileOffset = OpVariable %_ptr_Function_v3uint Function
+         %13 = OpLoad %v3uint %gl_TileOffsetQCOM
+               OpStore %tileOffset %13
+               OpReturn
+               OpFunctionEnd
+)";
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_4);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-TileOffsetQCOM-TileOffsetQCOM-10628"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("According to the Vulkan spec BuiltIn TileOffsetQCOM "
+                        "variable must be a 2-component 32-bit "
+                        "unsigned int vector."));
+}
+
+TEST_F(ValidateBuiltIns,
+       TileDimensionRequiresFragmentOrGLComputeExecutionModel) {
+  const std::string spirv = R"(
+               OpCapability Shader
+               OpExtension "SPV_QCOM_tile_shading"
+          %2 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Vertex %main "main" %gl_TileDimensionQCOM
+               OpExecutionMode %main OriginUpperLeft
+               OpDecorate %gl_TileDimensionQCOM BuiltIn TileDimensionQCOM
+               OpDecorate %gl_TileDimensionQCOM Flat
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %v3uint = OpTypeVector %uint 3
+%_ptr_Function_v3uint = OpTypePointer Function %v3uint
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gl_TileDimensionQCOM = OpVariable %_ptr_Input_v3uint Input
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+    %tileDim = OpVariable %_ptr_Function_v3uint Function
+         %13 = OpLoad %v3uint %gl_TileDimensionQCOM
+               OpStore %tileDim %13
+               OpReturn
+               OpFunctionEnd
+)";
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_4);
+  EXPECT_EQ(SPV_ERROR_INVALID_CAPABILITY,
+            ValidateInstructions(SPV_ENV_VULKAN_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("requires one of these capabilities: TileShadingQCOM"));
+}
+
+TEST_F(ValidateBuiltIns, TileDimensionRequiresInputStorageClass) {
+  const std::string spirv = R"(
+               OpCapability Shader
+               OpCapability TileShadingQCOM
+               OpExtension "SPV_QCOM_tile_shading"
+          %2 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %gl_TileDimensionQCOM
+               OpExecutionMode %main OriginUpperLeft
+               OpDecorate %gl_TileDimensionQCOM BuiltIn TileDimensionQCOM
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %v3uint = OpTypeVector %uint 3
+%_ptr_Output_v3uint = OpTypePointer Output %v3uint
+%gl_TileDimensionQCOM = OpVariable %_ptr_Output_v3uint Output
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+               OpReturn
+               OpFunctionEnd
+)";
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_4);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-TileDimensionQCOM-TileDimensionQCOM-10630"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Vulkan spec allows BuiltIn TileDimensionQCOM to be "
+                        "only used for variables with Input storage class."));
+}
+
+TEST_F(ValidateBuiltIns,
+       TileDimensionRequiresThreeComponent32BitUnsignedIntegerVector) {
+  const std::string spirv = R"(
+               OpCapability Shader
+               OpCapability TileShadingQCOM
+               OpExtension "SPV_QCOM_tile_shading"
+          %2 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %gl_TileDimensionQCOM
+               OpExecutionMode %main OriginUpperLeft
+               OpDecorate %gl_TileDimensionQCOM BuiltIn TileDimensionQCOM
+               OpDecorate %gl_TileDimensionQCOM Flat
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %v2uint = OpTypeVector %uint 2
+%_ptr_Function_v2uint = OpTypePointer Function %v2uint
+%_ptr_Input_v2uint = OpTypePointer Input %v2uint
+%gl_TileDimensionQCOM = OpVariable %_ptr_Input_v2uint Input
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+    %tileDim = OpVariable %_ptr_Function_v2uint Function
+         %13 = OpLoad %v2uint %gl_TileDimensionQCOM
+               OpStore %tileDim %13
+               OpReturn
+               OpFunctionEnd
+)";
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_4);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-TileDimensionQCOM-TileDimensionQCOM-10631"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("According to the Vulkan spec BuiltIn TileDimensionQCOM "
+                "variable must be a 3-component 32-bit "
+                "unsigned int vector."));
+}
+
+TEST_F(ValidateBuiltIns,
+       TileApronSizeRequiresFragmentOrGLComputeExecutionModel) {
+  const std::string spirv = R"(
+               OpCapability Shader
+               OpExtension "SPV_QCOM_tile_shading"
+          %2 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Vertex %main "main" %gl_TileApronSizeQCOM
+               OpExecutionMode %main OriginUpperLeft
+               OpDecorate %gl_TileApronSizeQCOM BuiltIn TileApronSizeQCOM
+               OpDecorate %gl_TileApronSizeQCOM Flat
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %v2uint = OpTypeVector %uint 2
+%_ptr_Function_v2uint = OpTypePointer Function %v2uint
+%_ptr_Input_v2uint = OpTypePointer Input %v2uint
+%gl_TileApronSizeQCOM = OpVariable %_ptr_Input_v2uint Input
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+  %apronSize = OpVariable %_ptr_Function_v2uint Function
+         %13 = OpLoad %v2uint %gl_TileApronSizeQCOM
+               OpStore %apronSize %13
+               OpReturn
+               OpFunctionEnd
+)";
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_4);
+  EXPECT_EQ(SPV_ERROR_INVALID_CAPABILITY,
+            ValidateInstructions(SPV_ENV_VULKAN_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("requires one of these capabilities: TileShadingQCOM"));
+}
+
+TEST_F(ValidateBuiltIns, TileApronSizeRequiresInputStorageClass) {
+  const std::string spirv = R"(
+               OpCapability Shader
+               OpCapability TileShadingQCOM
+               OpExtension "SPV_QCOM_tile_shading"
+          %2 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %gl_TileApronSizeQCOM
+               OpExecutionMode %main OriginUpperLeft
+               OpDecorate %gl_TileApronSizeQCOM BuiltIn TileApronSizeQCOM
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %v2uint = OpTypeVector %uint 2
+%_ptr_Output_v2uint = OpTypePointer Output %v2uint
+%gl_TileApronSizeQCOM = OpVariable %_ptr_Output_v2uint Output
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+               OpReturn
+               OpFunctionEnd
+)";
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_4);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-TileApronSizeQCOM-TileApronSizeQCOM-10633"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Vulkan spec allows BuiltIn TileApronSizeQCOM to be "
+                        "only used for variables with Input storage class."));
+}
+
+TEST_F(ValidateBuiltIns,
+       TileApronSizeRequiresTwoComponent32BitUnsignedIntegerVector) {
+  const std::string spirv = R"(
+               OpCapability Shader
+               OpCapability TileShadingQCOM
+               OpExtension "SPV_QCOM_tile_shading"
+          %2 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %gl_TileApronSizeQCOM
+               OpExecutionMode %main OriginUpperLeft
+               OpDecorate %gl_TileApronSizeQCOM BuiltIn TileApronSizeQCOM
+               OpDecorate %gl_TileApronSizeQCOM Flat
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %v3uint = OpTypeVector %uint 3
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gl_TileApronSizeQCOM = OpVariable %_ptr_Input_v3uint Input
+       %main = OpFunction %void None %4
+          %6 = OpLabel
+               OpReturn
+               OpFunctionEnd
+)";
+  CompileSuccessfully(spirv, SPV_ENV_VULKAN_1_4);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_4));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-TileApronSizeQCOM-TileApronSizeQCOM-10634"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("According to the Vulkan spec BuiltIn TileApronSizeQCOM "
+                "variable must be a 2-component 32-bit "
+                "unsigned int vector."));
+}
+
+TEST_F(ValidateBuiltIns, VolatileSubgroupSizeMissingVolatileDecoration) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability RayTracingKHR
+    OpCapability GroupNonUniform
+    OpExtension "SPV_KHR_ray_tracing"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint RayGenerationKHR %main "main" %subgroup_size
+    OpDecorate %subgroup_size BuiltIn SubgroupSize
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %uint = OpTypeInt 32 0
+    %ptr = OpTypePointer Input %uint
+    %subgroup_size = OpVariable %ptr Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %val = OpLoad %uint %subgroup_size
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-VulkanMemoryModel-04678"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("must also be decorated with Volatile"));
+}
+
+TEST_F(ValidateBuiltIns, VolatileSubgroupSizeWithVolatileDecorationGood) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability RayTracingKHR
+    OpCapability GroupNonUniform
+    OpExtension "SPV_KHR_ray_tracing"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint RayGenerationKHR %main "main" %subgroup_size
+    OpDecorate %subgroup_size BuiltIn SubgroupSize
+    OpDecorate %subgroup_size Volatile
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %uint = OpTypeInt 32 0
+    %ptr = OpTypePointer Input %uint
+    %subgroup_size = OpVariable %ptr Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %val = OpLoad %uint %subgroup_size
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+}
+
+TEST_F(ValidateBuiltIns, VolatileSubgroupSizeIrrelevantStageGood) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability GroupNonUniform
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint Fragment %main "main" %subgroup_size
+    OpExecutionMode %main OriginUpperLeft
+    OpDecorate %subgroup_size BuiltIn SubgroupSize
+    OpDecorate %subgroup_size Flat
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %uint = OpTypeInt 32 0
+    %ptr = OpTypePointer Input %uint
+    %subgroup_size = OpVariable %ptr Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %val = OpLoad %uint %subgroup_size
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+}
+
+TEST_F(ValidateBuiltIns, VolatileSubgroupSizeLoadMissingVolatileAccess) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability RayTracingKHR
+    OpCapability GroupNonUniform
+    OpCapability VulkanMemoryModel
+    OpExtension "SPV_KHR_ray_tracing"
+    OpExtension "SPV_KHR_vulkan_memory_model"
+    OpMemoryModel Logical Vulkan
+    OpEntryPoint RayGenerationKHR %main "main" %subgroup_size
+    OpDecorate %subgroup_size BuiltIn SubgroupSize
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %uint = OpTypeInt 32 0
+    %ptr = OpTypePointer Input %uint
+    %subgroup_size = OpVariable %ptr Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %val = OpLoad %uint %subgroup_size
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-VulkanMemoryModel-04679"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpLoad must use a Volatile memory access"));
+}
+
+TEST_F(ValidateBuiltIns, VolatileSubgroupSizeLoadWithVolatileAccessGood) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability RayTracingKHR
+    OpCapability GroupNonUniform
+    OpCapability VulkanMemoryModel
+    OpExtension "SPV_KHR_ray_tracing"
+    OpExtension "SPV_KHR_vulkan_memory_model"
+    OpMemoryModel Logical Vulkan
+    OpEntryPoint RayGenerationKHR %main "main" %subgroup_size
+    OpDecorate %subgroup_size BuiltIn SubgroupSize
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %uint = OpTypeInt 32 0
+    %ptr = OpTypePointer Input %uint
+    %subgroup_size = OpVariable %ptr Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %val = OpLoad %uint %subgroup_size Volatile
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+}
+
+TEST_F(ValidateBuiltIns, VolatileRayTmaxOnlyRestrictedToIntersection) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability RayTracingKHR
+    OpExtension "SPV_KHR_ray_tracing"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint IntersectionKHR %main "main" %ray_tmax
+    OpDecorate %ray_tmax BuiltIn RayTmaxKHR
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %float = OpTypeFloat 32
+    %ptr = OpTypePointer Input %float
+    %ray_tmax = OpVariable %ptr Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %val = OpLoad %float %ray_tmax
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-VulkanMemoryModel-04678"));
+}
+
+TEST_F(ValidateBuiltIns, VolatileSubgroupSizeCopyObjectLoad) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability RayTracingKHR
+    OpCapability GroupNonUniform
+    OpCapability VulkanMemoryModel
+    OpExtension "SPV_KHR_ray_tracing"
+    OpExtension "SPV_KHR_vulkan_memory_model"
+    OpMemoryModel Logical Vulkan
+    OpEntryPoint CallableKHR %main "main" %subgroup_size
+    OpDecorate %subgroup_size BuiltIn SubgroupSize
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %uint = OpTypeInt 32 0
+    %ptr = OpTypePointer Input %uint
+    %subgroup_size = OpVariable %ptr Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %copy = OpCopyObject %ptr %subgroup_size
+    %val = OpLoad %uint %copy
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-VulkanMemoryModel-04679"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpLoad must use a Volatile memory access"));
+}
+
+TEST_F(ValidateBuiltIns, VolatileSubgroupSizeCopyObjectLoadGood) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability RayTracingKHR
+    OpCapability GroupNonUniform
+    OpCapability VulkanMemoryModel
+    OpExtension "SPV_KHR_ray_tracing"
+    OpExtension "SPV_KHR_vulkan_memory_model"
+    OpMemoryModel Logical Vulkan
+    OpEntryPoint CallableKHR %main "main" %subgroup_size
+    OpDecorate %subgroup_size BuiltIn SubgroupSize
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %uint = OpTypeInt 32 0
+    %ptr = OpTypePointer Input %uint
+    %subgroup_size = OpVariable %ptr Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %copy = OpCopyObject %ptr %subgroup_size
+    %val = OpLoad %uint %copy Volatile
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+}
+
+TEST_F(ValidateBuiltIns, VolatileSubgroupEqMaskAccessChainLoad) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability RayTracingKHR
+    OpCapability GroupNonUniformBallot
+    OpCapability VulkanMemoryModel
+    OpExtension "SPV_KHR_ray_tracing"
+    OpExtension "SPV_KHR_vulkan_memory_model"
+    OpMemoryModel Logical Vulkan
+    OpEntryPoint MissKHR %main "main" %mask
+    OpDecorate %mask BuiltIn SubgroupEqMask
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %uint = OpTypeInt 32 0
+    %uint_0 = OpConstant %uint 0
+    %v4uint = OpTypeVector %uint 4
+    %ptr_vec = OpTypePointer Input %v4uint
+    %ptr_uint = OpTypePointer Input %uint
+    %mask = OpVariable %ptr_vec Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %gep = OpAccessChain %ptr_uint %mask %uint_0
+    %val = OpLoad %uint %gep
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-VulkanMemoryModel-04679"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpLoad must use a Volatile memory access"));
+}
+
+TEST_F(ValidateBuiltIns, VolatileSubgroupEqMaskAccessChainLoadGood) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability RayTracingKHR
+    OpCapability GroupNonUniformBallot
+    OpCapability VulkanMemoryModel
+    OpExtension "SPV_KHR_ray_tracing"
+    OpExtension "SPV_KHR_vulkan_memory_model"
+    OpMemoryModel Logical Vulkan
+    OpEntryPoint MissKHR %main "main" %mask
+    OpDecorate %mask BuiltIn SubgroupEqMask
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %uint = OpTypeInt 32 0
+    %uint_0 = OpConstant %uint 0
+    %v4uint = OpTypeVector %uint 4
+    %ptr_vec = OpTypePointer Input %v4uint
+    %ptr_uint = OpTypePointer Input %uint
+    %mask = OpVariable %ptr_vec Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %gep = OpAccessChain %ptr_uint %mask %uint_0
+    %val = OpLoad %uint %gep Volatile
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+}
+
+// The pointer can be forwarded any number of times before it is loaded.
+TEST_F(ValidateBuiltIns, VolatileSubgroupEqMaskCopyObjectAccessChainLoad) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability RayTracingKHR
+    OpCapability GroupNonUniformBallot
+    OpCapability VulkanMemoryModel
+    OpExtension "SPV_KHR_ray_tracing"
+    OpExtension "SPV_KHR_vulkan_memory_model"
+    OpMemoryModel Logical Vulkan
+    OpEntryPoint MissKHR %main "main" %mask
+    OpDecorate %mask BuiltIn SubgroupEqMask
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %uint = OpTypeInt 32 0
+    %uint_0 = OpConstant %uint 0
+    %v4uint = OpTypeVector %uint 4
+    %ptr_vec = OpTypePointer Input %v4uint
+    %ptr_uint = OpTypePointer Input %uint
+    %mask = OpVariable %ptr_vec Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %copy = OpCopyObject %ptr_vec %mask
+    %gep = OpAccessChain %ptr_uint %copy %uint_0
+    %copy_gep = OpCopyObject %ptr_uint %gep
+    %val = OpLoad %uint %copy_gep
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-VulkanMemoryModel-04679"));
+}
+
+// The built-in id used as an OpAccessChain index is not the pointer being
+// loaded, so it must not be traced.
+TEST_F(ValidateBuiltIns, VolatileSubgroupSizeUsedAsIndexGood) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability RayTracingKHR
+    OpCapability GroupNonUniform
+    OpCapability VulkanMemoryModel
+    OpExtension "SPV_KHR_ray_tracing"
+    OpExtension "SPV_KHR_vulkan_memory_model"
+    OpMemoryModel Logical Vulkan
+    OpEntryPoint CallableKHR %main "main" %subgroup_size
+    OpDecorate %subgroup_size BuiltIn SubgroupSize
+    OpDecorate %array ArrayStride 4
+    OpDecorate %block Block
+    OpMemberDecorate %block 0 Offset 0
+    OpDecorate %ssbo DescriptorSet 0
+    OpDecorate %ssbo Binding 0
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %uint = OpTypeInt 32 0
+    %uint_4 = OpConstant %uint 4
+    %uint_0 = OpConstant %uint 0
+    %array = OpTypeArray %uint %uint_4
+    %block = OpTypeStruct %array
+    %ptr_block = OpTypePointer StorageBuffer %block
+    %ptr_uint_sb = OpTypePointer StorageBuffer %uint
+    %ssbo = OpVariable %ptr_block StorageBuffer
+    %ptr = OpTypePointer Input %uint
+    %subgroup_size = OpVariable %ptr Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %size = OpLoad %uint %subgroup_size Volatile
+    %gep = OpAccessChain %ptr_uint_sb %ssbo %uint_0 %size
+    %val = OpLoad %uint %gep
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+}
+
+// The BuiltIn is on the struct member, but the Volatile decoration belongs on
+// the variable declared with it.
+TEST_F(ValidateBuiltIns, VolatileBlockMemberMissingVolatileDecoration) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability RayTracingKHR
+    OpCapability ShaderSMBuiltinsNV
+    OpExtension "SPV_KHR_ray_tracing"
+    OpExtension "SPV_NV_shader_sm_builtins"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint ClosestHitKHR %main "main" %var
+    OpDecorate %block Block
+    OpMemberDecorate %block 0 BuiltIn SMIDNV
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %uint = OpTypeInt 32 0
+    %uint_0 = OpConstant %uint 0
+    %block = OpTypeStruct %uint
+    %ptr_block = OpTypePointer Input %block
+    %ptr_uint = OpTypePointer Input %uint
+    %var = OpVariable %ptr_block Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %gep = OpAccessChain %ptr_uint %var %uint_0
+    %val = OpLoad %uint %gep
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-VulkanMemoryModel-04678"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("must also be decorated with Volatile"));
+}
+
+TEST_F(ValidateBuiltIns, VolatileBlockMemberWithVolatileDecorationGood) {
+  const std::string text = R"(
+    OpCapability Shader
+    OpCapability RayTracingKHR
+    OpCapability ShaderSMBuiltinsNV
+    OpExtension "SPV_KHR_ray_tracing"
+    OpExtension "SPV_NV_shader_sm_builtins"
+    OpMemoryModel Logical GLSL450
+    OpEntryPoint ClosestHitKHR %main "main" %var
+    OpDecorate %block Block
+    OpDecorate %var Volatile
+    OpMemberDecorate %block 0 BuiltIn SMIDNV
+    %void = OpTypeVoid
+    %voidfn = OpTypeFunction %void
+    %uint = OpTypeInt 32 0
+    %uint_0 = OpConstant %uint 0
+    %block = OpTypeStruct %uint
+    %ptr_block = OpTypePointer Input %block
+    %ptr_uint = OpTypePointer Input %uint
+    %var = OpVariable %ptr_block Input
+    %main = OpFunction %void None %voidfn
+    %entry = OpLabel
+    %gep = OpAccessChain %ptr_uint %var %uint_0
+    %val = OpLoad %uint %gep
+    OpReturn
+    OpFunctionEnd
+  )";
+
+  CompileSuccessfully(text, SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
 }
 
 }  // namespace

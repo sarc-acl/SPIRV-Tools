@@ -830,6 +830,194 @@ OpFunctionEnd)";
   EXPECT_FALSE(ctx->AreAnalysesValid(IRContext::kAnalysisDominatorAnalysis));
 }
 
+TEST_F(IRContextTest, InvalidateCFGInvalidatesAll) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability Linkage
+OpMemoryModel Logical GLSL450
+%1 = OpTypeVoid
+%2 = OpTypeFunction %1
+%3 = OpFunction %1 None %2
+%4 = OpLabel
+OpReturn
+OpFunctionEnd)";
+
+  std::unique_ptr<IRContext> ctx =
+      BuildModule(SPV_ENV_UNIVERSAL_1_1, nullptr, text,
+                  SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+
+  ctx->BuildInvalidAnalyses(
+      IRContext::kAnalysisCFG | IRContext::kAnalysisDominatorAnalysis |
+      IRContext::kAnalysisStructuredCFG | IRContext::kAnalysisLoopAnalysis |
+      IRContext::kAnalysisScalarEvolution | IRContext::kAnalysisLiveness);
+
+  ctx->InvalidateAnalyses(IRContext::kAnalysisCFG);
+  EXPECT_FALSE(ctx->AreAnalysesValid(IRContext::kAnalysisCFG));
+  EXPECT_FALSE(ctx->AreAnalysesValid(IRContext::kAnalysisDominatorAnalysis));
+  EXPECT_FALSE(ctx->AreAnalysesValid(IRContext::kAnalysisStructuredCFG));
+}
+
+TEST_F(IRContextTest, InvalidateDominatorInvalidatesDownstreamOnly) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability Linkage
+OpMemoryModel Logical GLSL450
+%1 = OpTypeVoid
+%2 = OpTypeFunction %1
+%3 = OpFunction %1 None %2
+%4 = OpLabel
+OpReturn
+OpFunctionEnd)";
+
+  std::unique_ptr<IRContext> ctx =
+      BuildModule(SPV_ENV_UNIVERSAL_1_1, nullptr, text,
+                  SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+
+  ctx->BuildInvalidAnalyses(
+      IRContext::kAnalysisCFG | IRContext::kAnalysisDominatorAnalysis |
+      IRContext::kAnalysisStructuredCFG | IRContext::kAnalysisLoopAnalysis |
+      IRContext::kAnalysisScalarEvolution | IRContext::kAnalysisLiveness);
+
+  ctx->InvalidateAnalyses(IRContext::kAnalysisDominatorAnalysis);
+  EXPECT_TRUE(ctx->AreAnalysesValid(IRContext::kAnalysisCFG));
+  EXPECT_TRUE(ctx->AreAnalysesValid(IRContext::kAnalysisStructuredCFG));
+  EXPECT_FALSE(ctx->AreAnalysesValid(IRContext::kAnalysisDominatorAnalysis));
+}
+
+TEST_F(IRContextTest, InvalidateLoopInvalidatesDownstreamOnly) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability Linkage
+OpMemoryModel Logical GLSL450
+%1 = OpTypeVoid
+%2 = OpTypeFunction %1
+%3 = OpFunction %1 None %2
+%4 = OpLabel
+OpReturn
+OpFunctionEnd)";
+
+  std::unique_ptr<IRContext> ctx =
+      BuildModule(SPV_ENV_UNIVERSAL_1_1, nullptr, text,
+                  SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+
+  ctx->BuildInvalidAnalyses(
+      IRContext::kAnalysisCFG | IRContext::kAnalysisDominatorAnalysis |
+      IRContext::kAnalysisStructuredCFG | IRContext::kAnalysisLoopAnalysis |
+      IRContext::kAnalysisScalarEvolution | IRContext::kAnalysisLiveness);
+
+  ctx->InvalidateAnalyses(IRContext::kAnalysisLoopAnalysis);
+  EXPECT_TRUE(ctx->AreAnalysesValid(IRContext::kAnalysisCFG));
+  EXPECT_TRUE(ctx->AreAnalysesValid(IRContext::kAnalysisDominatorAnalysis));
+  EXPECT_TRUE(ctx->AreAnalysesValid(IRContext::kAnalysisStructuredCFG));
+  EXPECT_FALSE(ctx->AreAnalysesValid(IRContext::kAnalysisLoopAnalysis));
+  EXPECT_FALSE(ctx->AreAnalysesValid(IRContext::kAnalysisScalarEvolution));
+  EXPECT_FALSE(ctx->AreAnalysesValid(IRContext::kAnalysisLiveness));
+}
+
+#ifdef SPIRV_CHECK_CONTEXT
+TEST_F(IRContextTest, IsConsistentCatchesInconsistentDominator) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability Linkage
+OpMemoryModel Logical GLSL450
+%1 = OpTypeVoid
+%2 = OpTypeFunction %1
+%3 = OpFunction %1 None %2
+%4 = OpLabel
+OpReturn
+OpFunctionEnd)";
+
+  std::unique_ptr<IRContext> ctx =
+      BuildModule(SPV_ENV_UNIVERSAL_1_1, nullptr, text,
+                  SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+
+  ASSERT_TRUE(ctx->module()->begin() != ctx->module()->end());
+  Function* func = &*ctx->module()->begin();
+
+  // Computes and caches dominator analysis
+  auto* dom = ctx->GetDominatorAnalysis(func);
+  EXPECT_TRUE(ctx->IsConsistent());
+
+  // Mess up the cached tree
+  dom->GetDomTree().ClearTree();
+
+  // It should catch the inconsistency
+  EXPECT_FALSE(ctx->IsConsistent());
+}
+
+TEST_F(IRContextTest, IsConsistentCatchesInconsistentStructuredCFG) {
+  const std::string text = R"(
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %4 "main"
+               OpExecutionMode %4 OriginUpperLeft
+          %2 = OpTypeVoid
+          %3 = OpTypeFunction %2
+          %11 = OpTypeBool
+          %true = OpConstantTrue %11
+          %4 = OpFunction %2 None %3
+          %5 = OpLabel
+               OpSelectionMerge %10 None
+               OpBranchConditional %true %8 %9
+          %8 = OpLabel
+               OpBranch %10
+          %9 = OpLabel
+               OpBranch %10
+         %10 = OpLabel
+               OpReturn
+               OpFunctionEnd
+  )";
+
+  std::unique_ptr<IRContext> ctx =
+      BuildModule(SPV_ENV_UNIVERSAL_1_3, nullptr, text,
+                  SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+
+  // Build and cache structured CFG analysis
+  ctx->BuildInvalidAnalyses(IRContext::kAnalysisStructuredCFG);
+  EXPECT_TRUE(ctx->IsConsistent());
+
+  // Modify the merge block operand of the selection merge instruction without
+  // invalidating the analysis
+  Instruction* merge_inst = ctx->cfg()->block(5)->GetMergeInst();
+  ASSERT_NE(merge_inst, nullptr);
+  // Change merge block target from %10 to %8 (operand 0 is %10)
+  merge_inst->SetInOperand(0, {8});
+
+  // It should catch the inconsistency
+  EXPECT_FALSE(ctx->IsConsistent());
+}
+#else
+TEST_F(IRContextTest, IsConsistentAlwaysTrueWithoutMacro) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability Linkage
+OpMemoryModel Logical GLSL450
+%1 = OpTypeVoid
+%2 = OpTypeFunction %1
+%3 = OpFunction %1 None %2
+%4 = OpLabel
+OpReturn
+OpFunctionEnd)";
+
+  std::unique_ptr<IRContext> ctx =
+      BuildModule(SPV_ENV_UNIVERSAL_1_1, nullptr, text,
+                  SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+
+  ASSERT_TRUE(ctx->module()->begin() != ctx->module()->end());
+  Function* func = &*ctx->module()->begin();
+
+  auto* dom = ctx->GetDominatorAnalysis(func);
+  EXPECT_TRUE(ctx->IsConsistent());
+
+  // Mess up the cached tree
+  dom->GetDomTree().ClearTree();
+
+  // Without SPIRV_CHECK_CONTEXT it should still return true
+  EXPECT_TRUE(ctx->IsConsistent());
+}
+#endif
+
 TEST_F(IRContextTest, AsanErrorTest) {
   std::string shader = R"(
                OpCapability Shader
@@ -1155,10 +1343,7 @@ struct TargetEnvCompareTestData {
 
 using TargetEnvCompareTest = ::testing::TestWithParam<TargetEnvCompareTestData>;
 
-TEST_P(TargetEnvCompareTest, Case) {
-  // If new environments are added, then we must update the list of tests.
-  ASSERT_EQ(SPV_ENV_VULKAN_1_3 + 1, SPV_ENV_MAX);
-
+TEST_P(TargetEnvCompareTest, IsTargetEnvAtLeast) {
   const auto& tc = GetParam();
 
   std::unique_ptr<Module> module(new Module());
@@ -1422,6 +1607,8 @@ TEST_F(IRContextTest, RemovesMultipleCapabilities) {
             1);
 }
 
+// If new environments are added, then we must update the list of tests.
+static_assert(SPV_ENV_VULKAN_1_4 + 1 == SPV_ENV_MAX);
 INSTANTIATE_TEST_SUITE_P(
     TestCase, TargetEnvCompareTest,
     ::testing::Values(
@@ -1464,6 +1651,7 @@ INSTANTIATE_TEST_SUITE_P(
         TargetEnvCompareTestData{SPV_ENV_VULKAN_1_1, SPV_ENV_UNIVERSAL_1_1},
         TargetEnvCompareTestData{SPV_ENV_VULKAN_1_1, SPV_ENV_UNIVERSAL_1_2},
         TargetEnvCompareTestData{SPV_ENV_VULKAN_1_1, SPV_ENV_UNIVERSAL_1_3},
+        TargetEnvCompareTestData{SPV_ENV_VULKAN_1_1, SPV_ENV_VULKAN_1_0},
         TargetEnvCompareTestData{SPV_ENV_UNIVERSAL_1_4, SPV_ENV_VULKAN_1_1},
         TargetEnvCompareTestData{SPV_ENV_UNIVERSAL_1_5, SPV_ENV_VULKAN_1_1},
         TargetEnvCompareTestData{SPV_ENV_UNIVERSAL_1_6, SPV_ENV_VULKAN_1_1},
@@ -1473,6 +1661,7 @@ INSTANTIATE_TEST_SUITE_P(
         TargetEnvCompareTestData{SPV_ENV_VULKAN_1_2, SPV_ENV_UNIVERSAL_1_3},
         TargetEnvCompareTestData{SPV_ENV_VULKAN_1_2, SPV_ENV_UNIVERSAL_1_4},
         TargetEnvCompareTestData{SPV_ENV_VULKAN_1_2, SPV_ENV_UNIVERSAL_1_5},
+        TargetEnvCompareTestData{SPV_ENV_VULKAN_1_2, SPV_ENV_VULKAN_1_1},
         TargetEnvCompareTestData{SPV_ENV_UNIVERSAL_1_6, SPV_ENV_VULKAN_1_2},
         TargetEnvCompareTestData{SPV_ENV_VULKAN_1_3, SPV_ENV_UNIVERSAL_1_0},
         TargetEnvCompareTestData{SPV_ENV_VULKAN_1_3, SPV_ENV_UNIVERSAL_1_1},
@@ -1480,7 +1669,16 @@ INSTANTIATE_TEST_SUITE_P(
         TargetEnvCompareTestData{SPV_ENV_VULKAN_1_3, SPV_ENV_UNIVERSAL_1_3},
         TargetEnvCompareTestData{SPV_ENV_VULKAN_1_3, SPV_ENV_UNIVERSAL_1_4},
         TargetEnvCompareTestData{SPV_ENV_VULKAN_1_3, SPV_ENV_UNIVERSAL_1_5},
-        TargetEnvCompareTestData{SPV_ENV_VULKAN_1_3, SPV_ENV_UNIVERSAL_1_6}));
+        TargetEnvCompareTestData{SPV_ENV_VULKAN_1_3, SPV_ENV_UNIVERSAL_1_6},
+        TargetEnvCompareTestData{SPV_ENV_VULKAN_1_3, SPV_ENV_VULKAN_1_2},
+        TargetEnvCompareTestData{SPV_ENV_VULKAN_1_4, SPV_ENV_UNIVERSAL_1_0},
+        TargetEnvCompareTestData{SPV_ENV_VULKAN_1_4, SPV_ENV_UNIVERSAL_1_1},
+        TargetEnvCompareTestData{SPV_ENV_VULKAN_1_4, SPV_ENV_UNIVERSAL_1_2},
+        TargetEnvCompareTestData{SPV_ENV_VULKAN_1_4, SPV_ENV_UNIVERSAL_1_3},
+        TargetEnvCompareTestData{SPV_ENV_VULKAN_1_4, SPV_ENV_UNIVERSAL_1_4},
+        TargetEnvCompareTestData{SPV_ENV_VULKAN_1_4, SPV_ENV_UNIVERSAL_1_5},
+        TargetEnvCompareTestData{SPV_ENV_VULKAN_1_4, SPV_ENV_UNIVERSAL_1_6},
+        TargetEnvCompareTestData{SPV_ENV_VULKAN_1_4, SPV_ENV_VULKAN_1_3}));
 
 }  // namespace
 }  // namespace opt

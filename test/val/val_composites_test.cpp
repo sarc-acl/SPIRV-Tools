@@ -33,7 +33,9 @@ using ValidateComposites = spvtest::ValidateBase<bool>;
 std::string GenerateShaderCode(
     const std::string& body,
     const std::string& capabilities_and_extensions = "",
-    const std::string& execution_model = "Fragment") {
+    const std::string& execution_model = "Fragment",
+    const std::string& extra_types = "",
+    const std::string& memory_model = "Logical GLSL450") {
   std::ostringstream ss;
   ss << R"(
 OpCapability Shader
@@ -41,7 +43,7 @@ OpCapability Float64
 )";
 
   ss << capabilities_and_extensions;
-  ss << "OpMemoryModel Logical GLSL450\n";
+  ss << "OpMemoryModel " << memory_model << "\n";
   ss << "OpEntryPoint " << execution_model << " %main \"main\"\n";
   if (execution_model == "Fragment") {
     ss << "OpExecutionMode %main OriginUpperLeft\n";
@@ -93,7 +95,11 @@ OpCapability Float64
 
 %ptr_big_struct = OpTypePointer Uniform %big_struct
 %var_big_struct = OpVariable %ptr_big_struct Uniform
+)";
 
+  ss << extra_types;
+
+  ss << R"(
 %main = OpFunction %void None %func
 %main_entry = OpLabel
 )";
@@ -315,6 +321,19 @@ TEST_F(ValidateComposites, CompositeConstructVectorOnlyOneConstituent) {
               HasSubstr("Expected number of constituents to be at least 2"));
 }
 
+TEST_F(ValidateComposites, CompositeConstructLongVectorOnlyOneConstituent) {
+  const std::string body = R"(
+%val1 = OpCompositeConstruct %f32vec4 %f32vec4_0123
+)";
+  const std::string caps = R"(
+OpCapability LongVectorEXT
+OpExtension "SPV_EXT_long_vector"
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body, caps).c_str());
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
 TEST_F(ValidateComposites, CompositeConstructVectorWrongConsituent1) {
   const std::string body = R"(
 %val1 = OpCompositeConstruct %f32vec4 %f32 %f32vec2_12
@@ -521,6 +540,201 @@ TEST_F(ValidateComposites, CompositeConstructStructWrongConstituent) {
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("Expected Constituent type to be equal to the "
                         "corresponding member type of Result Type struct"));
+}
+
+TEST_F(ValidateComposites, CompositeConstructReplicateVectorGood) {
+  const std::string body = R"(
+%val1 = OpCompositeConstructReplicateEXT %f32vec4 %f32_0
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body,
+                         "OpCapability ReplicatedCompositesEXT\nOpExtension "
+                         "\"SPV_EXT_replicated_composites\"\n")
+          .c_str());
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateComposites, CompositeConstructReplicateMatrixGood) {
+  const std::string body = R"(
+%val1 = OpCompositeConstructReplicateEXT %f32mat22 %f32vec2_01
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body,
+                         "OpCapability ReplicatedCompositesEXT\nOpExtension "
+                         "\"SPV_EXT_replicated_composites\"\n",
+                         "Fragment")
+          .c_str());
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateComposites, CompositeConstructReplicateArrayGood) {
+  const std::string body = R"(
+%val1 = OpCompositeConstructReplicateEXT %f32vec2arr3 %f32vec2_12
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body,
+                         "OpCapability ReplicatedCompositesEXT\nOpExtension "
+                         "\"SPV_EXT_replicated_composites\"\n")
+          .c_str());
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateComposites, CompositeConstructReplicateStructGood) {
+  const std::string copy_types = R"(
+%f32struct = OpTypeStruct %f32 %f32 %f32
+)";
+
+  const std::string body = R"(
+%val1 = OpCompositeConstructReplicateEXT %f32struct %f32_0
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body,
+                         "OpCapability ReplicatedCompositesEXT\nOpExtension "
+                         "\"SPV_EXT_replicated_composites\"\n",
+                         "Fragment", copy_types)
+          .c_str());
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateComposites, CompositeConstructReplicateCoopMatGood) {
+  const std::string extra_types = R"(
+%u32_8 = OpConstant %u32 8
+%u32_16 = OpConstant %u32 16
+%subgroup = OpConstant %u32 3
+%useA = OpConstant %u32 0
+%f32mat_nv = OpTypeCooperativeMatrixNV %f32 %subgroup %u32_8 %u32_8
+%f32mat_khr = OpTypeCooperativeMatrixKHR %f32 %subgroup %u32_16 %u32_16 %useA
+)";
+
+  const std::string body = R"(
+%val1 = OpCompositeConstructReplicateEXT %f32mat_nv %f32_0
+%val2 = OpCompositeConstructReplicateEXT %f32mat_khr %f32_0
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body,
+                         "OpCapability ReplicatedCompositesEXT\n"
+                         "OpCapability CooperativeMatrixNV\n"
+                         "OpCapability CooperativeMatrixKHR\n"
+                         "OpCapability VulkanMemoryModel\n"
+                         "OpCapability Float16\n"
+                         "OpExtension \"SPV_EXT_replicated_composites\"\n"
+                         "OpExtension \"SPV_NV_cooperative_matrix\"\n"
+                         "OpExtension \"SPV_KHR_cooperative_matrix\"\n"
+                         "OpExtension \"SPV_KHR_vulkan_memory_model\"\n",
+                         "Fragment", extra_types, "Logical Vulkan")
+          .c_str(),
+      SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+TEST_F(ValidateComposites, CompositeConstructReplicateTensorGood) {
+  const std::string extra_types = R"(
+%arr = OpTypeArray %u32 %u32_1
+%c_arr = OpConstantNull %arr
+%tensor = OpTypeTensorARM %f32 %u32_1 %c_arr
+)";
+
+  const std::string body = R"(
+%val1 = OpCompositeConstructReplicateEXT %tensor %f32_0
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body,
+                         "OpCapability ReplicatedCompositesEXT\nOpCapability "
+                         "TensorsARM\nOpExtension "
+                         "\"SPV_EXT_replicated_composites\"\nOpExtension "
+                         "\"SPV_ARM_tensors\"\n",
+                         "Fragment", extra_types)
+          .c_str());
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateComposites, CompositeConstructReplicateCoopMatWrongOperand) {
+  const std::string extra_types = R"(
+%u32_8 = OpConstant %u32 8
+%subgroup = OpConstant %u32 3
+%f32mat_nv = OpTypeCooperativeMatrixNV %f32 %subgroup %u32_8 %u32_8
+)";
+
+  const std::string body = R"(
+%val1 = OpCompositeConstructReplicateEXT %f32mat_nv %u32_0
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body,
+                         "OpCapability ReplicatedCompositesEXT\n"
+                         "OpCapability CooperativeMatrixNV\n"
+                         "OpCapability Float16\n"
+                         "OpExtension \"SPV_EXT_replicated_composites\"\n"
+                         "OpExtension \"SPV_NV_cooperative_matrix\"\n",
+                         "Fragment", extra_types)
+          .c_str());
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "Expected Value type to be equal to the result's element type"));
+}
+
+TEST_F(ValidateComposites, CompositeConstructReplicateTensorWrongOperand) {
+  const std::string extra_types = R"(
+%tensor = OpTypeTensorARM %f32
+)";
+
+  const std::string body = R"(
+%val1 = OpCompositeConstructReplicateEXT %tensor %u32_0
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body,
+                         "OpCapability ReplicatedCompositesEXT\nOpCapability "
+                         "TensorsARM\nOpExtension "
+                         "\"SPV_EXT_replicated_composites\"\nOpExtension "
+                         "\"SPV_ARM_tensors\"\n",
+                         "Fragment", extra_types)
+          .c_str());
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "Expected Value type to be equal to the result's element type"));
+}
+
+TEST_F(ValidateComposites, CompositeConstructReplicateWrongOperandType) {
+  const std::string body = R"(
+%val1 = OpCompositeConstructReplicateEXT %f32vec4 %u32_0
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body,
+                         "OpCapability ReplicatedCompositesEXT\nOpExtension "
+                         "\"SPV_EXT_replicated_composites\"\n")
+          .c_str());
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "Expected Value type to be equal to the result's element type"));
+}
+
+TEST_F(ValidateComposites, CompositeConstructReplicateNotComposite) {
+  const std::string body = R"(
+%val1 = OpCompositeConstructReplicateEXT %f32 %f32_0
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body,
+                         "OpCapability ReplicatedCompositesEXT\nOpExtension "
+                         "\"SPV_EXT_replicated_composites\"\n")
+          .c_str());
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Expected Result Type to be a composite type"));
 }
 
 TEST_F(ValidateComposites, CopyObjectSuccess) {
@@ -1565,9 +1779,10 @@ TEST_F(ValidateComposites, CoopMatKHRConstantCompositeMismatchFail) {
 OpCapability Shader
 OpCapability Float16
 OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
 OpExtension "SPV_KHR_cooperative_matrix"
 OpExtension "SPV_KHR_vulkan_memory_model"
-OpMemoryModel Logical GLSL450
+OpMemoryModel Logical VulkanKHR
 OpEntryPoint GLCompute %main "main"
 %void = OpTypeVoid
 %func = OpTypeFunction %void
@@ -1592,8 +1807,8 @@ OpEntryPoint GLCompute %main "main"
 OpReturn
 OpFunctionEnd)";
 
-  CompileSuccessfully(body.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(
       getDiagnosticString(),
       HasSubstr(
@@ -1606,9 +1821,10 @@ TEST_F(ValidateComposites, CoopMatKHRCompositeConstructMismatchFail) {
 OpCapability Shader
 OpCapability Float16
 OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
 OpExtension "SPV_KHR_cooperative_matrix"
 OpExtension "SPV_KHR_vulkan_memory_model"
-OpMemoryModel Logical GLSL450
+OpMemoryModel Logical VulkanKHR
 OpEntryPoint GLCompute %main "main"
 %void = OpTypeVoid
 %func = OpTypeFunction %void
@@ -1633,8 +1849,9 @@ OpEntryPoint GLCompute %main "main"
 OpReturn
 OpFunctionEnd)";
 
-  CompileSuccessfully(body.c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(
       getDiagnosticString(),
       HasSubstr("Expected Constituent type to be equal to the component type"));
@@ -2100,6 +2317,1414 @@ TEST_F(ValidateComposites, CopyObjectVoid) {
   EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("OpCopyObject cannot have void result type"));
+}
+
+TEST_F(ValidateComposites, CoopVecConstantCompositePass) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability CooperativeVectorNV
+OpExtension "SPV_NV_cooperative_vector"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%func = OpTypeFunction %void
+%bool = OpTypeBool
+%f16 = OpTypeFloat 16
+%f32 = OpTypeFloat 32
+%u32 = OpTypeInt 32 0
+
+%u32_16 = OpConstant %u32 16
+%useA = OpConstant %u32 0
+%subgroup = OpConstant %u32 3
+
+%f16vec = OpTypeCooperativeVectorNV %f16 %u32_16
+
+%f16_1 = OpConstant %f16 1
+
+%f16vec_1 = OpConstantComposite %f16vec %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1
+
+%main = OpFunction %void None %func
+%main_entry = OpLabel
+
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str());
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateComposites, CoopVecConstantCompositeMismatchFail) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability CooperativeVectorNV
+OpExtension "SPV_NV_cooperative_vector"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%func = OpTypeFunction %void
+%bool = OpTypeBool
+%f16 = OpTypeFloat 16
+%f32 = OpTypeFloat 32
+%u32 = OpTypeInt 32 0
+
+%u32_16 = OpConstant %u32 16
+%useA = OpConstant %u32 0
+%subgroup = OpConstant %u32 3
+
+%f16vec = OpTypeCooperativeVectorNV %f16 %u32_16
+
+%f32_1 = OpConstant %f32 1
+
+%f16vec_1 = OpConstantComposite %f16vec %f32_1
+
+%main = OpFunction %void None %func
+%main_entry = OpLabel
+
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str());
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("OpConstantComposite Constituent <id> count does not match "
+                "Result Type <id> '11[%11]'s vector component count"));
+}
+
+TEST_F(ValidateComposites, CoopVecCompositeConstructPass) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability CooperativeVectorNV
+OpExtension "SPV_NV_cooperative_vector"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%func = OpTypeFunction %void
+%bool = OpTypeBool
+%f16 = OpTypeFloat 16
+%f32 = OpTypeFloat 32
+%u32 = OpTypeInt 32 0
+
+%u32_16 = OpConstant %u32 16
+%useA = OpConstant %u32 0
+%subgroup = OpConstant %u32 3
+
+%f16vec = OpTypeCooperativeVectorNV %f16 %u32_16
+
+%f16_1 = OpConstant %f16 1
+
+%main = OpFunction %void None %func
+%main_entry = OpLabel
+
+%f16vec_1 = OpCompositeConstruct %f16vec %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1
+
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str());
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateComposites, CoopVecCompositeConstructMismatchFail) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability CooperativeVectorNV
+OpExtension "SPV_NV_cooperative_vector"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%func = OpTypeFunction %void
+%bool = OpTypeBool
+%f16 = OpTypeFloat 16
+%f32 = OpTypeFloat 32
+%u32 = OpTypeInt 32 0
+
+%u32_16 = OpConstant %u32 16
+%useA = OpConstant %u32 0
+%subgroup = OpConstant %u32 3
+
+%f16vec = OpTypeCooperativeVectorNV %f16 %u32_16
+
+%f32_1 = OpConstant %f32 1
+
+%main = OpFunction %void None %func
+%main_entry = OpLabel
+
+%f16vec_1 = OpCompositeConstruct %f16vec %f32_1
+
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str());
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Expected Constituents to be scalars or vectors of the "
+                        "same type as Result Type components"));
+}
+
+TEST_F(ValidateComposites, CoopVecInsertExtractDynamicPass) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability CooperativeVectorNV
+OpExtension "SPV_NV_cooperative_vector"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%func = OpTypeFunction %void
+%bool = OpTypeBool
+%f16 = OpTypeFloat 16
+%f32 = OpTypeFloat 32
+%u32 = OpTypeInt 32 0
+
+%u32_1 = OpConstant %u32 1
+%u32_16 = OpConstant %u32 16
+%useA = OpConstant %u32 0
+%subgroup = OpConstant %u32 3
+
+%f16vec = OpTypeCooperativeVectorNV %f16 %u32_16
+
+%f16_1 = OpConstant %f16 1
+%f16vec_1 = OpConstantComposite %f16vec %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1 %f16_1
+
+%main = OpFunction %void None %func
+%main_entry = OpLabel
+
+%insert = OpVectorInsertDynamic %f16vec %f16vec_1 %f16_1 %u32_1
+%extract = OpVectorExtractDynamic %f16 %insert %u32_1
+
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str());
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvBitCastArrayQCOM1) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%u8int = OpTypeInt 8 0
+%uint = OpTypeInt 32 0
+%half = OpTypeFloat 16
+%uint_8 = OpConstant %uint 8
+%uint_16 = OpConstant %uint 16
+%_arr_u8int_uint_8 = OpTypeArray %u8int %uint_8
+%_arr_half_uint_16 = OpTypeArray %half %uint_16
+%_ptr_Function__arr_half_uint_16 = OpTypePointer Function %_arr_half_uint_16
+%main = OpFunction %void None %3
+%5 = OpLabel
+%hvec8A = OpVariable %_ptr_Function__arr_half_uint_16 Function
+%16 = OpLoad %_arr_half_uint_16 %hvec8A
+%18 = OpBitCastArrayQCOM %_arr_u8int_uint_8 %16
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode BitCastArrayQCOM requires the result element "
+                        "type be one of 32-bit OpTypeInt (signed/unsigned), "
+                        "32-bit OpTypeFloat and 16-bit OpTypeFloat"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvBitCastArrayQCOM2) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%u8int = OpTypeInt 8 0
+%uint = OpTypeInt 32 0
+;%half = OpTypeFloat 16
+%uint_8 = OpConstant %uint 8
+%uint_32 = OpConstant %uint 32
+%_arr_uint_uint_8 = OpTypeArray %uint %uint_8
+%_arr_u8int_uint_32 = OpTypeArray %u8int %uint_32
+%_ptr_Function__arr_u8int_uint_32 = OpTypePointer Function %_arr_u8int_uint_32
+%main = OpFunction %void None %3
+%5 = OpLabel
+%u8A = OpVariable %_ptr_Function__arr_u8int_uint_32 Function
+%16 = OpLoad %_arr_u8int_uint_32 %u8A
+%18 = OpBitCastArrayQCOM %_arr_uint_uint_8 %16
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode BitCastArrayQCOM requires the source element "
+                        "type be one of 32-bit OpTypeInt (signed/unsigned), "
+                        "32-bit OpTypeFloat and 16-bit OpTypeFloat"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvBitCastArrayQCOM3) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%half = OpTypeFloat 16
+%uint_16 = OpConstant %uint 16
+%_arr_uint_uint_16 = OpTypeArray %uint %uint_16
+%_arr_half_uint_16 = OpTypeArray %half %uint_16
+%_ptr_Function__arr_half_uint_16 = OpTypePointer Function %_arr_half_uint_16
+%main = OpFunction %void None %3
+%5 = OpLabel
+%hvec8A = OpVariable %_ptr_Function__arr_half_uint_16 Function
+%16 = OpLoad %_arr_half_uint_16 %hvec8A
+%18 = OpBitCastArrayQCOM %_arr_uint_uint_16 %16
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode BitCastArrayQCOM requires source and result "
+                        "types be compatible for conversion."));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractSubArrayQCOM1) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%uint_0 = OpConstant %uint 0
+%uint_8 = OpConstant %uint 8
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_64 = OpTypeArray %uint %uint_64
+%_arr_float_uint_8 = OpTypeArray %float %uint_8
+%_ptr_Function__arr_uint_uint_64 = OpTypePointer Function %_arr_uint_uint_64
+%main = OpFunction %void None %3
+%5 = OpLabel
+%uvec64Acc = OpVariable %_ptr_Function__arr_uint_uint_64 Function
+%83 = OpLoad %_arr_uint_uint_64 %uvec64Acc
+%86 = OpExtractSubArrayQCOM %_arr_float_uint_8 %83 %uint_0
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode ExtractSubArrayQCOM requires the input "
+                        "and result element types match."));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvConstructQCOMTy) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%u8int = OpTypeInt 8 0
+%float = OpTypeFloat 32
+%uint_0 = OpConstant %uint 0
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_32 = OpConstant %uint 32
+%uint_64 = OpConstant %uint 64
+%_arr_u8int_uint_32 = OpTypeArray %u8int %uint_32
+%_ptr_Function__arr_u8int_uint_32 = OpTypePointer Function %_arr_u8int_uint_32
+%113 = OpTypeCooperativeMatrixKHR %float %uint_3 %uint_64 %uint_8 %uint_0
+%main = OpFunction %void None %3
+%5 = OpLabel
+%u8_32 = OpVariable %_ptr_Function__arr_u8int_uint_32 Function
+%116 = OpLoad %_arr_u8int_uint_32 %u8_32
+%118 = OpCompositeConstructCoopMatQCOM %113 %116
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeConstructCoopMatQCOM requires ether "
+                        "the input element type is equal to the result element "
+                        "type or it is the unsigned 32-bit integer."));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvConstructQCOMA1) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%u8int = OpTypeInt 8 0
+%float = OpTypeFloat 32
+%uint_0 = OpConstant %uint 0
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_32 = OpConstant %uint 32
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_8 = OpTypeArray %uint %uint_8
+%_ptr_Function__arr_uint_uint_8 = OpTypePointer Function %_arr_uint_uint_8
+%113 = OpTypeCooperativeMatrixKHR %uint %uint_3 %uint_64 %uint_8 %uint_0
+%main = OpFunction %void None %3
+%5 = OpLabel
+%u32_8 = OpVariable %_ptr_Function__arr_uint_uint_8 Function
+%116 = OpLoad %_arr_uint_uint_8 %u32_8
+%118 = OpCompositeConstructCoopMatQCOM %113 %116
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeConstructCoopMatQCOM requires "
+                        "the result element type is one of 8-bit OpTypeInt "
+                        "signed/unsigned, 16- or 32-bit OpTypeFloat when "
+                        "result coopmat's use is MatrixAKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvConstructQCOMA2) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%u8int = OpTypeInt 8 0
+%float = OpTypeFloat 32
+%uint_0 = OpConstant %uint 0
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_16 = OpConstant %uint 16
+%uint_32 = OpConstant %uint 32
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_8 = OpTypeArray %uint %uint_8
+%_ptr_Function__arr_uint_uint_8 = OpTypePointer Function %_arr_uint_uint_8
+%113 = OpTypeCooperativeMatrixKHR %float %uint_3 %uint_64 %uint_16 %uint_0
+%main = OpFunction %void None %3
+%5 = OpLabel
+%u32_8 = OpVariable %_ptr_Function__arr_uint_uint_8 Function
+%116 = OpLoad %_arr_uint_uint_8 %u32_8
+%118 = OpCompositeConstructCoopMatQCOM %113 %116
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeConstructCoopMatQCOM requires "
+                        "the columns of the result coopmat have the bit "
+                        "length of 256 when result coopmat's use is "
+                        "MatrixAKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvConstructQCOMA3) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%u8int = OpTypeInt 8 0
+%float = OpTypeFloat 32
+%uint_0 = OpConstant %uint 0
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_16 = OpConstant %uint 16
+%uint_32 = OpConstant %uint 32
+%uint_64 = OpConstant %uint 64
+%_arr_u8int_uint_16 = OpTypeArray %u8int %uint_16
+%_ptr_Function__arr_u8int_uint_16 = OpTypePointer Function %_arr_u8int_uint_16
+%113 = OpTypeCooperativeMatrixKHR %u8int %uint_3 %uint_64 %uint_32 %uint_0
+%main = OpFunction %void None %3
+%5 = OpLabel
+%u8_16 = OpVariable %_ptr_Function__arr_u8int_uint_16 Function
+%116 = OpLoad %_arr_u8int_uint_16 %u8_16
+%118 = OpCompositeConstructCoopMatQCOM %113 %116
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeConstructCoopMatQCOM requires "
+                        "the source array length be 8 if its elt type is "
+                        "32-bit unsigned OpTypeInt and be the result's "
+                        "number of columns, otherwise when result coopmat's "
+                        "use is MatrixAKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvConstructQCOMB1) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%u8int = OpTypeInt 8 0
+%float = OpTypeFloat 32
+%uint_1 = OpConstant %uint 1
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_32 = OpConstant %uint 32
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_8 = OpTypeArray %uint %uint_8
+%_ptr_Function__arr_uint_uint_8 = OpTypePointer Function %_arr_uint_uint_8
+%113 = OpTypeCooperativeMatrixKHR %uint %uint_3 %uint_8 %uint_64 %uint_1
+%main = OpFunction %void None %3
+%5 = OpLabel
+%u32_8 = OpVariable %_ptr_Function__arr_uint_uint_8 Function
+%116 = OpLoad %_arr_uint_uint_8 %u32_8
+%118 = OpCompositeConstructCoopMatQCOM %113 %116
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeConstructCoopMatQCOM requires "
+                        "the result element type is one of 8-bit OpTypeInt "
+                        "signed/unsigned, 16- or 32-bit OpTypeFloat when "
+                        "result coopmat's use is MatrixBKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvConstructQCOMB2) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%u8int = OpTypeInt 8 0
+%float = OpTypeFloat 32
+%uint_1 = OpConstant %uint 1
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_16 = OpConstant %uint 16
+%uint_32 = OpConstant %uint 32
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_8 = OpTypeArray %uint %uint_8
+%_ptr_Function__arr_uint_uint_8 = OpTypePointer Function %_arr_uint_uint_8
+%113 = OpTypeCooperativeMatrixKHR %float %uint_3 %uint_16 %uint_64 %uint_1
+%main = OpFunction %void None %3
+%5 = OpLabel
+%u32_8 = OpVariable %_ptr_Function__arr_uint_uint_8 Function
+%116 = OpLoad %_arr_uint_uint_8 %u32_8
+%118 = OpCompositeConstructCoopMatQCOM %113 %116
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeConstructCoopMatQCOM requires "
+                        "the rows of the result operand have the bit "
+                        "length of 256 when result coopmat's use is "
+                        "MatrixBKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvConstructQCOMB3) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%u8int = OpTypeInt 8 0
+%float = OpTypeFloat 32
+%uint_0 = OpConstant %uint 0
+%uint_1 = OpConstant %uint 1
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_16 = OpConstant %uint 16
+%uint_32 = OpConstant %uint 32
+%uint_64 = OpConstant %uint 64
+%_arr_u8int_uint_16 = OpTypeArray %u8int %uint_16
+%_ptr_Function__arr_u8int_uint_16 = OpTypePointer Function %_arr_u8int_uint_16
+%113 = OpTypeCooperativeMatrixKHR %u8int %uint_3 %uint_32 %uint_64 %uint_1
+%main = OpFunction %void None %3
+%5 = OpLabel
+%u8_16 = OpVariable %_ptr_Function__arr_u8int_uint_16 Function
+%116 = OpLoad %_arr_u8int_uint_16 %u8_16
+%118 = OpCompositeConstructCoopMatQCOM %113 %116
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("Opcode CompositeConstructCoopMatQCOM requires "
+                "the source array length be 8 if its elt type "
+                "is 32-bit unsigned OpTypeInt and be the result's "
+                "number of rows, otherwise when result coopmat's use is "
+                "MatrixBKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvConstructQCOMAcc1) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%u8int = OpTypeInt 8 0
+%float = OpTypeFloat 32
+%uint_0 = OpConstant %uint 0
+%uint_2 = OpConstant %uint 2
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_32 = OpConstant %uint 32
+%uint_64 = OpConstant %uint 64
+%_arr_u8int_uint_32 = OpTypeArray %u8int %uint_32
+%_ptr_Function__arr_u8int_uint_32 = OpTypePointer Function %_arr_u8int_uint_32
+%113 = OpTypeCooperativeMatrixKHR %u8int %uint_3 %uint_64 %uint_64 %uint_2
+%main = OpFunction %void None %3
+%5 = OpLabel
+%u8_32 = OpVariable %_ptr_Function__arr_u8int_uint_32 Function
+%116 = OpLoad %_arr_u8int_uint_32 %u8_32
+%118 = OpCompositeConstructCoopMatQCOM %113 %116
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeConstructCoopMatQCOM requires "
+                        "the result element type is one of 32-bit "
+                        "OpTypeInt signed/unsigned, 16- or 32-bit "
+                        "OpTypeFloat when result coopmat's use is "
+                        "MatrixAccumulatorKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvConstructQCOMAcc2) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%half = OpTypeFloat 16
+%uint_2 = OpConstant %uint 2
+%uint_3 = OpConstant %uint 3
+%uint_16 = OpConstant %uint 16
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_16 = OpTypeArray %uint %uint_16
+%_ptr_Function__arr_uint_uint_16 = OpTypePointer Function %_arr_uint_uint_16
+%113 = OpTypeCooperativeMatrixKHR %half %uint_3 %uint_64 %uint_64 %uint_2
+%main = OpFunction %void None %3
+%5 = OpLabel
+%u32_16 = OpVariable %_ptr_Function__arr_uint_uint_16 Function
+%116 = OpLoad %_arr_uint_uint_16 %u32_16
+%118 = OpCompositeConstructCoopMatQCOM %113 %116
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeConstructCoopMatQCOM requires "
+                        "the source array length be a half of the number "
+                        "of columns of the resulting cooerative matrix if "
+                        "the matrix's componet type is 16-bit OpTypeFloat "
+                        "and be equal to the number of columns, otherwise, "
+                        "when result coopmat's use is "
+                        "MatrixAccumulatorKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractQCOMA1) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_0 = OpConstant %uint 0
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_8 = OpTypeArray %uint %uint_8
+%_ptr_Function__arr_uint_uint_8 = OpTypePointer Function %_arr_uint_uint_8
+%113 = OpTypeCooperativeMatrixKHR %uint %uint_3 %uint_64 %uint_8 %uint_0
+%_ptr_Function_113 = OpTypePointer Function %113
+%main = OpFunction %void None %3
+%5 = OpLabel
+%matA_u32_64_8 = OpVariable %_ptr_Function_113 Function
+%249 = OpLoad %113 %matA_u32_64_8
+%251 = OpCompositeExtractCoopMatQCOM %_arr_uint_uint_8 %249
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeExtractCoopMatQCOM requires "
+                        "the source element type be one of 8-bit "
+                        "OpTypeInt signed/unsigned, 16- or 32-bit "
+                        "OpTypeFloat when source coopmat's use is "
+                        "MatrixAKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractQCOMA2) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%uint_0 = OpConstant %uint 0
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_16 = OpConstant %uint 16
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_8 = OpTypeArray %uint %uint_8
+%_ptr_Function__arr_uint_uint_8 = OpTypePointer Function %_arr_uint_uint_8
+%113 = OpTypeCooperativeMatrixKHR %float %uint_3 %uint_64 %uint_16 %uint_0
+%_ptr_Function_113 = OpTypePointer Function %113
+%main = OpFunction %void None %3
+%5 = OpLabel
+%matA_u32_64_8 = OpVariable %_ptr_Function_113 Function
+%249 = OpLoad %113 %matA_u32_64_8
+%251 = OpCompositeExtractCoopMatQCOM %_arr_uint_uint_8 %249
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeExtractCoopMatQCOM "
+                        "requires the columns of the source "
+                        "coopmat have the bit length of 256 "
+                        "when source coopmat's use is "
+                        "MatrixAKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractQCOMA3) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%u8int = OpTypeInt 8 0
+%uint_0 = OpConstant %uint 0
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_32 = OpConstant %uint 32
+%uint_64 = OpConstant %uint 64
+%_arr_u8int_uint_64 = OpTypeArray %u8int %uint_64
+%_ptr_Function__arr_u8int_uint_64 = OpTypePointer Function %_arr_u8int_uint_64
+%113 = OpTypeCooperativeMatrixKHR %u8int %uint_3 %uint_64 %uint_32 %uint_0
+%_ptr_Function_113 = OpTypePointer Function %113
+%main = OpFunction %void None %3
+%5 = OpLabel
+%matA_u8_64_32 = OpVariable %_ptr_Function_113 Function
+%249 = OpLoad %113 %matA_u8_64_32
+%251 = OpCompositeExtractCoopMatQCOM %_arr_u8int_uint_64 %249
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeExtractCoopMatQCOM requires "
+                        "either the result element type be the same as "
+                        "the source cooperative matrix's component type "
+                        "and its length be the same as the number of "
+                        "columns of the matrix or the result element "
+                        "type be unsigned 32-bit OpTypeInt and the "
+                        "length be 8 when source coopmat's use is "
+                        "MatrixAKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractQCOMA4) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%u8int = OpTypeInt 8 0
+%uint_0 = OpConstant %uint 0
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_16 = OpConstant %uint 16
+%uint_32 = OpConstant %uint 32
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_16 = OpTypeArray %uint %uint_16
+%_ptr_Function__arr_uint_uint_16 = OpTypePointer Function %_arr_uint_uint_16
+%113 = OpTypeCooperativeMatrixKHR %u8int %uint_3 %uint_64 %uint_32 %uint_0
+%_ptr_Function_113 = OpTypePointer Function %113
+%main = OpFunction %void None %3
+%5 = OpLabel
+%matA_u8_64_32 = OpVariable %_ptr_Function_113 Function
+%249 = OpLoad %113 %matA_u8_64_32
+%251 = OpCompositeExtractCoopMatQCOM %_arr_uint_uint_16 %249
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeExtractCoopMatQCOM requires "
+                        "either the result element type be the same as "
+                        "the source cooperative matrix's component type "
+                        "and its length be the same as the number of "
+                        "columns of the matrix or the result element "
+                        "type be unsigned 32-bit OpTypeInt and the "
+                        "length be 8 when source coopmat's use is "
+                        "MatrixAKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractQCOMB1) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_0 = OpConstant %uint 0
+%uint_1 = OpConstant %uint 1
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_8 = OpTypeArray %uint %uint_8
+%_ptr_Function__arr_uint_uint_8 = OpTypePointer Function %_arr_uint_uint_8
+%113 = OpTypeCooperativeMatrixKHR %uint %uint_3 %uint_8 %uint_64 %uint_1
+%_ptr_Function_113 = OpTypePointer Function %113
+%main = OpFunction %void None %3
+%5 = OpLabel
+%matA_u32_64_8 = OpVariable %_ptr_Function_113 Function
+%249 = OpLoad %113 %matA_u32_64_8
+%251 = OpCompositeExtractCoopMatQCOM %_arr_uint_uint_8 %249
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeExtractCoopMatQCOM "
+                        "requires the source element type be "
+                        "one of 8-bit OpTypeInt signed/unsigned, "
+                        "16- or 32-bit OpTypeFloat when source "
+                        "coopmat's use is "
+                        "MatrixBKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractQCOMB2) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%float = OpTypeFloat 32
+%uint_0 = OpConstant %uint 0
+%uint_1 = OpConstant %uint 1
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_16 = OpConstant %uint 16
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_8 = OpTypeArray %uint %uint_8
+%_ptr_Function__arr_uint_uint_8 = OpTypePointer Function %_arr_uint_uint_8
+%113 = OpTypeCooperativeMatrixKHR %float %uint_3 %uint_16 %uint_64 %uint_1
+%_ptr_Function_113 = OpTypePointer Function %113
+%main = OpFunction %void None %3
+%5 = OpLabel
+%matA_u32_64_8 = OpVariable %_ptr_Function_113 Function
+%249 = OpLoad %113 %matA_u32_64_8
+%251 = OpCompositeExtractCoopMatQCOM %_arr_uint_uint_8 %249
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeExtractCoopMatQCOM requires "
+                        "the rows of the source coopmat have the bit "
+                        "length of 256 when source coopmat's use is "
+                        "MatrixBKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractQCOMB3) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%u8int = OpTypeInt 8 0
+%uint_0 = OpConstant %uint 0
+%uint_1 = OpConstant %uint 1
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_16 = OpConstant %uint 16
+%uint_32 = OpConstant %uint 32
+%uint_64 = OpConstant %uint 64
+%_arr_u8int_uint_16 = OpTypeArray %u8int %uint_16
+%_ptr_Function__arr_u8int_uint_16 = OpTypePointer Function %_arr_u8int_uint_16
+%113 = OpTypeCooperativeMatrixKHR %u8int %uint_3 %uint_32 %uint_64 %uint_1
+%_ptr_Function_113 = OpTypePointer Function %113
+%main = OpFunction %void None %3
+%5 = OpLabel
+%matA_u8_16_64 = OpVariable %_ptr_Function_113 Function
+%249 = OpLoad %113 %matA_u8_16_64
+%251 = OpCompositeExtractCoopMatQCOM %_arr_u8int_uint_16 %249
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeExtractCoopMatQCOM requires "
+                        "either the result element type be the same as "
+                        "the source cooperative matrix's component type "
+                        "and its length be the same as the number of "
+                        "rows of the matrix or the result element "
+                        "type be unsigned 32-bit OpTypeInt and the "
+                        "length be 8 when source coopmat's use is "
+                        "MatrixBKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractQCOMB4) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%u8int = OpTypeInt 8 0
+%uint_0 = OpConstant %uint 0
+%uint_1 = OpConstant %uint 1
+%uint_3 = OpConstant %uint 3
+%uint_16 = OpConstant %uint 16
+%uint_32 = OpConstant %uint 32
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_16 = OpTypeArray %uint %uint_16
+%_ptr_Function__arr_uint_uint_16 = OpTypePointer Function %_arr_uint_uint_16
+%113 = OpTypeCooperativeMatrixKHR %u8int %uint_3 %uint_32 %uint_64 %uint_1
+%_ptr_Function_113 = OpTypePointer Function %113
+%main = OpFunction %void None %3
+%5 = OpLabel
+%matA_u8_32_64 = OpVariable %_ptr_Function_113 Function
+%249 = OpLoad %113 %matA_u8_32_64
+%251 = OpCompositeExtractCoopMatQCOM %_arr_uint_uint_16 %249
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeExtractCoopMatQCOM requires "
+                        "either the result element type be the same as "
+                        "the source cooperative matrix's component type "
+                        "and its length be the same as the number of "
+                        "rows of the matrix or the result element "
+                        "type be unsigned 32-bit OpTypeInt and the "
+                        "length be 8 when source coopmat's use is "
+                        "MatrixBKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractQCOMAcc1) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%u8int = OpTypeInt 8 0
+%uint = OpTypeInt 32 0
+%uint_0 = OpConstant %uint 0
+%uint_2 = OpConstant %uint 2
+%uint_3 = OpConstant %uint 3
+%uint_8 = OpConstant %uint 8
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_8 = OpTypeArray %uint %uint_8
+%_ptr_Function__arr_uint_uint_8 = OpTypePointer Function %_arr_uint_uint_8
+%113 = OpTypeCooperativeMatrixKHR %u8int %uint_3 %uint_64 %uint_64 %uint_2
+%_ptr_Function_113 = OpTypePointer Function %113
+%main = OpFunction %void None %3
+%5 = OpLabel
+%matA_u32_64_64 = OpVariable %_ptr_Function_113 Function
+%249 = OpLoad %113 %matA_u32_64_64
+%251 = OpCompositeExtractCoopMatQCOM %_arr_uint_uint_8 %249
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeExtractCoopMatQCOM "
+                        "requires the source element type be "
+                        "one of 32-bit OpTypeInt signed/unsigned, "
+                        "16- or 32-bit OpTypeFloat when source "
+                        "coopmat's use is "
+                        "MatrixAccumulatorKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractQCOMAcc2) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%uint_0 = OpConstant %uint 0
+%uint_2 = OpConstant %uint 2
+%uint_3 = OpConstant %uint 3
+%uint_32 = OpConstant %uint 32
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_32 = OpTypeArray %uint %uint_32
+%_ptr_Function__arr_uint_uint_32 = OpTypePointer Function %_arr_uint_uint_32
+%113 = OpTypeCooperativeMatrixKHR %uint %uint_3 %uint_64 %uint_64 %uint_2
+%_ptr_Function_113 = OpTypePointer Function %113
+%main = OpFunction %void None %3
+%5 = OpLabel
+%matA_u32_64_64 = OpVariable %_ptr_Function_113 Function
+%249 = OpLoad %113 %matA_u32_64_64
+%251 = OpCompositeExtractCoopMatQCOM %_arr_uint_uint_32 %249
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeExtractCoopMatQCOM requires "
+                        "either the result element type be the same as "
+                        "the source cooperative matrix's component type "
+                        "and its length be the same as the number of "
+                        "columns of the matrix or the result element "
+                        "type be unsigned 32-bit OpTypeInt and the length "
+                        "be the number of the columns of the matrix if "
+                        "its component type is 32-bit OpTypeFloat and be "
+                        "a half of the number of the columns of the matrix "
+                        "if its component type is 16-bit OpTypeFloat when "
+                        "source coopmat's use is "
+                        "MatrixAccumulatorKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractQCOMAcc3) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%uint = OpTypeInt 32 0
+%half = OpTypeFloat 16
+%uint_0 = OpConstant %uint 0
+%uint_2 = OpConstant %uint 2
+%uint_3 = OpConstant %uint 3
+%uint_64 = OpConstant %uint 64
+%_arr_uint_uint_64 = OpTypeArray %uint %uint_64
+%_ptr_Function__arr_uint_uint_64 = OpTypePointer Function %_arr_uint_uint_64
+%113 = OpTypeCooperativeMatrixKHR %half %uint_3 %uint_64 %uint_64 %uint_2
+%_ptr_Function_113 = OpTypePointer Function %113
+%main = OpFunction %void None %3
+%5 = OpLabel
+%matA_f16_64_64 = OpVariable %_ptr_Function_113 Function
+%249 = OpLoad %113 %matA_f16_64_64
+%251 = OpCompositeExtractCoopMatQCOM %_arr_uint_uint_64 %249
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode CompositeExtractCoopMatQCOM requires "
+                        "either the result element type be the same as "
+                        "the source cooperative matrix's component type "
+                        "and its length be the same as the number of "
+                        "columns of the matrix or the result element "
+                        "type be unsigned 32-bit OpTypeInt and the length "
+                        "be the number of the columns of the matrix if "
+                        "its component type is 32-bit OpTypeFloat and be "
+                        "a half of the number of the columns of the matrix "
+                        "if its component type is 16-bit OpTypeFloat when "
+                        "source coopmat's use is "
+                        "MatrixAccumulatorKHR"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractSubArrayQCOM2) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int8
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%u8int = OpTypeInt 8 0
+%uint = OpTypeInt 32 0
+%uint_0 = OpConstant %uint 0
+%uint_8 = OpConstant %uint 8
+%uint_64 = OpConstant %uint 64
+%_arr_u8int_uint_8 = OpTypeArray %u8int %uint_8
+%_arr_u8int_uint_64 = OpTypeArray %u8int %uint_64
+%_ptr_Function__arr_u8int_uint_64 = OpTypePointer Function %_arr_u8int_uint_64
+%main = OpFunction %void None %3
+%5 = OpLabel
+%uvec64Acc = OpVariable %_ptr_Function__arr_u8int_uint_64 Function
+%83 = OpLoad %_arr_u8int_uint_64 %uvec64Acc
+%86 = OpExtractSubArrayQCOM %_arr_u8int_uint_8 %83 %uint_0
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode ExtractSubArrayQCOM requires the element type "
+                        "be one of 32-bit OpTypeInt (signed/unsigned), 32-bit "
+                        "OpTypeFloat and 16-bit OpTypeFloat"));
+}
+
+TEST_F(ValidateComposites, CoopMatVecConvExtractSubArrayQCOM3) {
+  const std::string body = R"(
+OpCapability Shader
+OpCapability Float16
+OpCapability Int16
+OpCapability CooperativeMatrixKHR
+OpCapability VulkanMemoryModelKHR
+OpCapability CooperativeMatrixConversionQCOM
+OpExtension "SPV_KHR_cooperative_matrix"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_QCOM_cooperative_matrix_conversion"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint GLCompute %main "main"
+%void = OpTypeVoid
+%3 = OpTypeFunction %void
+%ui16 = OpTypeInt 16 0
+%uint = OpTypeInt 32 0
+%f16 = OpTypeFloat 16
+%u16int_0 = OpConstant %ui16 0
+%uint_8 = OpConstant %uint 8
+%uint_64 = OpConstant %uint 64
+%_arr_f16_uint_8 = OpTypeArray %f16 %uint_8
+%_arr_f16_uint_64 = OpTypeArray %f16 %uint_64
+%_ptr_Function__arr_f16_uint_64 = OpTypePointer Function %_arr_f16_uint_64
+%main = OpFunction %void None %3
+%5 = OpLabel
+%f16vec64Acc = OpVariable %_ptr_Function__arr_f16_uint_64 Function
+%83 = OpLoad %_arr_f16_uint_64 %f16vec64Acc
+%86 = OpExtractSubArrayQCOM %_arr_f16_uint_8 %83 %u16int_0
+OpReturn
+OpFunctionEnd)";
+
+  CompileSuccessfully(body.c_str(), SPV_ENV_UNIVERSAL_1_3);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Opcode ExtractSubArrayQCOM requires the type of the "
+                        "start index operand be 32-bit OpTypeInt"));
+}
+
+TEST_F(ValidateComposites, VectorShuffleNotVectorOp1) {
+  const std::string spirv = R"(
+OpCapability ClipDistance
+%1 = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+%void = OpTypeVoid
+%67 = OpTypeFunction %void
+%float = OpTypeFloat 32
+%v2float = OpTypeVector %float 2
+%v3float = OpTypeVector %float 3
+%_ptr_Function_float = OpTypePointer Function %float
+%v4float = OpTypeVector %float 4
+%_ptr_Input_v4float = OpTypePointer Input %v4float
+%3 = OpVariable %_ptr_Input_v4float Input
+%func = OpFunction %void None %67
+%label = OpLabel
+%43 = OpVariable %_ptr_Function_float Function
+%373 = OpLoad %v4float %3
+%shuffle = OpVectorShuffle %v2float %1 %373 538976288 538976288
+%422 = OpLoad %v3float %43
+OpReturnValue %422
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_0);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("The type of Vector 1 must be a vector type"));
+}
+
+TEST_F(ValidateComposites, VectorShuffleNotVectorOp2) {
+  const std::string spirv = R"(
+OpCapability ClipDistance
+%1 = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+%void = OpTypeVoid
+%67 = OpTypeFunction %void
+%float = OpTypeFloat 32
+%v2float = OpTypeVector %float 2
+%v3float = OpTypeVector %float 3
+%_ptr_Function_float = OpTypePointer Function %float
+%v4float = OpTypeVector %float 4
+%_ptr_Input_v4float = OpTypePointer Input %v4float
+%3 = OpVariable %_ptr_Input_v4float Input
+%func = OpFunction %void None %67
+%label = OpLabel
+%43 = OpVariable %_ptr_Function_float Function
+%373 = OpLoad %v4float %3
+%shuffle = OpVectorShuffle %v2float %373 %1 538976288 538976288
+%422 = OpLoad %v3float %43
+OpReturnValue %422
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv, SPV_ENV_UNIVERSAL_1_0);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("The type of Vector 2 must be a vector type"));
 }
 
 }  // namespace

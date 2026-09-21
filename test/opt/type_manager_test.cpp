@@ -1,4 +1,6 @@
 // Copyright (c) 2016 Google Inc.
+// Modifications Copyright (C) 2024 Advanced Micro Devices, Inc. All rights
+// reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -147,6 +149,7 @@ std::vector<std::unique_ptr<Type>> GenerateAllTypes() {
   types.emplace_back(new Pointer(f32, spv::StorageClass::Input));
   types.emplace_back(new Pointer(sts32f32, spv::StorageClass::Function));
   types.emplace_back(new Pointer(a42f32, spv::StorageClass::Function));
+  types.emplace_back(new Pointer(nullptr, spv::StorageClass::Uniform));
 
   // Function
   types.emplace_back(new Function(voidt, {}));
@@ -174,6 +177,27 @@ std::vector<std::unique_ptr<Type>> GenerateAllTypes() {
   types.emplace_back(new CooperativeMatrixKHR(f32, 8, 8, 8, 1002));
   types.emplace_back(new RayQueryKHR());
   types.emplace_back(new HitObjectNV());
+  types.emplace_back(new HitObjectEXT());
+  types.emplace_back(new CooperativeVectorNV(f32, 16));
+
+  // SPV_AMDX_shader_enqueue
+  types.emplace_back(new NodePayloadArrayAMDX(sts32f32));
+
+  // Tensors
+  types.emplace_back(new TensorARM(f32));
+  auto* tensor_f32 = types.back().get();
+  types.emplace_back(new TensorARM(f32, 4));
+  auto* tensor_f32_ranked = types.back().get();
+  types.emplace_back(new TensorARM(f32, 4, 44));
+  auto* tensor_f32_shaped = types.back().get();
+
+  // BufferEXT (SPV_EXT_descriptor_heap)
+  types.emplace_back(new BufferEXT(spv::StorageClass::StorageBuffer));
+
+  // Graph
+  types.emplace_back(new GraphARM(0, {tensor_f32}));
+  types.emplace_back(new GraphARM(1, {tensor_f32_ranked, tensor_f32_ranked}));
+  types.emplace_back(new GraphARM(1, {tensor_f32_shaped, tensor_f32_shaped}));
 
   types.emplace_back(new TensorLayoutNV(1002, 1000));
   types.emplace_back(new TensorViewNV(1002, 1003, {1000, 1001}));
@@ -243,6 +267,15 @@ TEST(TypeManager, TypeStrings) {
     %cm   = OpTypeCooperativeMatrixNV %f64 %id4 %id4 %id4
     %id2    = OpConstant %u32 2
     %cmkhr  = OpTypeCooperativeMatrixKHR %f64 %id4 %id4 %id4 %id2
+    %untyped = OpTypeUntypedPointerKHR Uniform
+    ; ID 43
+    %ts_shape = OpConstantComposite %a5u32 %id4 %id4 %id4 %id4
+    %ts  = OpTypeTensorARM %u32
+    %tsr = OpTypeTensorARM %u32 %id4
+    %tss = OpTypeTensorARM %u32 %id4 %ts_shape
+    %g_noin = OpTypeGraphARM 0 %ts
+    %g_onein = OpTypeGraphARM 1 %tsr %tsr
+    %g_shaped = OpTypeGraphARM 1 %tss %tss
   )";
 
   std::vector<std::pair<uint32_t, std::string>> type_id_strs = {
@@ -282,10 +315,20 @@ TEST(TypeManager, TypeStrings) {
       {38, "[sint32, id(34), words(2,34)]"},
       {39, "<float64, 6, 6, 6>"},
       {41, "<float64, 6, 6, 6, 40>"},
+      {42, "untyped_ptr 2*"},  // Include storage class number
+      // Id 43 is OpConstantComposite %a5u32 %id4 %id4 %id4 %id4
+      {44, "tensor<uint32, id(0), id(0)>"},
+      {45, "tensor<uint32, id(6), id(0)>"},
+      {46, "tensor<uint32, id(6), id(43)>"},
+      {47, "graph<0,tensor<uint32, id(0), id(0)>>"},
+      {48,
+       "graph<1,tensor<uint32, id(6), id(0)>,tensor<uint32, id(6), id(0)>>"},
+      {49,
+       "graph<1,tensor<uint32, id(6), id(43)>,tensor<uint32, id(6), id(43)>>"},
   };
 
   std::unique_ptr<IRContext> context =
-      BuildModule(SPV_ENV_UNIVERSAL_1_1, nullptr, text);
+      BuildModule(SPV_ENV_UNIVERSAL_1_4, nullptr, text);
   ASSERT_NE(nullptr, context.get());  // It assembled
   TypeManager manager(nullptr, context.get());
 
@@ -297,6 +340,72 @@ TEST(TypeManager, TypeStrings) {
         << " id is " << p.first;
     EXPECT_EQ(p.first, manager.GetId(manager.GetType(p.first)));
   }
+}
+
+TEST(TypeManager, OCPMicroscalingTypeStrings) {
+  const std::string text = R"(
+    OpCapability Float4EXT
+    OpCapability Float6EXT
+    OpCapability Float8UnsignedE8M0EXT
+    OpCapability MXInt8EXT
+    OpExtension "SPV_EXT_ocp_microscaling_types"
+    OpMemoryModel Logical GLSL450
+    %1 = OpTypeFloat 4 Float4E2M1EXT
+    %2 = OpTypeFloat 6 Float6E2M3EXT
+    %3 = OpTypeFloat 6 Float6E3M2EXT
+    %4 = OpTypeFloat 8 Float8UnsignedE8M0EXT
+    %5 = OpTypeFloat 8 MXInt8EXT
+  )";
+
+  std::unique_ptr<IRContext> context =
+      BuildModule(SPV_ENV_UNIVERSAL_1_6, nullptr, text,
+                  SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+  ASSERT_NE(nullptr, context.get());
+  TypeManager manager(nullptr, context.get());
+
+  ASSERT_NE(nullptr, manager.GetType(1));
+  EXPECT_EQ("fp4e2m1", manager.GetType(1)->str());
+  ASSERT_NE(nullptr, manager.GetType(2));
+  EXPECT_EQ("fp6e2m3", manager.GetType(2)->str());
+  ASSERT_NE(nullptr, manager.GetType(3));
+  EXPECT_EQ("fp6e3m2", manager.GetType(3)->str());
+  ASSERT_NE(nullptr, manager.GetType(4));
+  EXPECT_EQ("fp8e8m0", manager.GetType(4)->str());
+  ASSERT_NE(nullptr, manager.GetType(5));
+  EXPECT_EQ("mxint8", manager.GetType(5)->str());
+}
+
+TEST(TypeManager, GetTypeInstructionEncodedFloats) {
+  const std::string text = R"(
+; CHECK: OpTypeFloat 4 Float4E2M1EXT
+; CHECK: OpTypeFloat 6 Float6E2M3EXT
+; CHECK: OpTypeFloat 6 Float6E3M2EXT
+; CHECK: OpTypeFloat 8 Float8UnsignedE8M0EXT
+; CHECK: OpTypeFloat 8 MXInt8EXT
+OpCapability Float4EXT
+OpCapability Float6EXT
+OpCapability Float8UnsignedE8M0EXT
+OpCapability MXInt8EXT
+OpExtension "SPV_EXT_ocp_microscaling_types"
+OpMemoryModel Logical GLSL450
+  )";
+
+  std::unique_ptr<IRContext> context =
+      BuildModule(SPV_ENV_UNIVERSAL_1_6, nullptr, text);
+  ASSERT_NE(nullptr, context.get());
+
+  Float fp4(4, spv::FPEncoding::Float4E2M1EXT);
+  Float fp6_e2m3(6, spv::FPEncoding::Float6E2M3EXT);
+  Float fp6_e3m2(6, spv::FPEncoding::Float6E3M2EXT);
+  Float e8m0(8, spv::FPEncoding::Float8UnsignedE8M0EXT);
+  Float mxint8(8, spv::FPEncoding::MXInt8EXT);
+  EXPECT_NE(0u, context->get_type_mgr()->GetTypeInstruction(&fp4));
+  EXPECT_NE(0u, context->get_type_mgr()->GetTypeInstruction(&fp6_e2m3));
+  EXPECT_NE(0u, context->get_type_mgr()->GetTypeInstruction(&fp6_e3m2));
+  EXPECT_NE(0u, context->get_type_mgr()->GetTypeInstruction(&e8m0));
+  EXPECT_NE(0u, context->get_type_mgr()->GetTypeInstruction(&mxint8));
+
+  Match(text, context.get(), /*do_validation=*/false);
 }
 
 TEST(TypeManager, StructWithFwdPtr) {
@@ -1040,8 +1149,11 @@ TEST(TypeManager, GetTypeInstructionAllTypes) {
 ; CHECK: [[uniform_ptr:%\w+]] = OpTypePointer Uniform [[uint]]
 ; CHECK: [[uint2:%\w+]] = OpConstant [[uint]] 2
 ; CHECK: [[uint8:%\w+]] = OpConstant [[uint]] 8
+; CHECK: [[uint4:%\w+]] = OpConstant [[uint]] 4
+; CHECK: [[uint_arr4:%\w+]] = OpTypeArray [[uint]] [[uint4]]
 ; CHECK: [[uint24:%\w+]] = OpConstant [[uint]] 24
 ; CHECK: [[uint42:%\w+]] = OpConstant [[uint]] 42
+; CHECK: [[uint_arr4_44:%\w+]] = OpConstantComposite [[uint_arr4]] [[uint4]] [[uint4]] [[uint4]] [[uint4]]
 ; CHECK: [[uint100:%\w+]] = OpConstant [[uint]] 100
 ; CHECK: [[void:%\w+]] = OpTypeVoid
 ; CHECK: [[bool:%\w+]] = OpTypeBool
@@ -1098,6 +1210,12 @@ TEST(TypeManager, GetTypeInstructionAllTypes) {
 ; CHECK: OpTypeCooperativeMatrixKHR [[f32]] [[uint8]] [[uint8]] [[uint8]] [[uint2]]
 ; CHECK: OpTypeRayQueryKHR
 ; CHECK: OpTypeHitObjectNV
+; CHECK: [[tensor_f32:%\w+]] = OpTypeTensorARM [[f32]]
+; CHECK: [[tensor_f32_ranked:%\w+]] = OpTypeTensorARM [[f32]] [[uint4]]
+; CHECK: [[tensor_f32_shaped:%\w+]] = OpTypeTensorARM [[f32]] [[uint4]] [[uint_arr4_44]]
+; CHECK: OpTypeGraphARM 0 [[tensor_f32]]
+; CHECK: OpTypeGraphARM 1 [[tensor_f32_ranked]] [[tensor_f32_ranked]]
+; CHECK: OpTypeGraphARM 1 [[tensor_f32_shaped]] [[tensor_f32_shaped]]
 OpCapability Shader
 OpCapability Int64
 OpCapability Linkage
@@ -1109,8 +1227,11 @@ OpMemoryModel Logical GLSL450
 %1001 = OpConstant %uint 1
 %1002 = OpConstant %uint 2
 %8 = OpConstant %uint 8
+%4 = OpConstant %uint 4
+%5 = OpTypeArray %uint %4
 %24 = OpConstant %uint 24
 %42 = OpConstant %uint 42
+%44 = OpConstantComposite %5 %4 %4 %4 %4
 %100 = OpConstant %uint 100
 %1003 = OpConstantFalse %bool
   )";
@@ -1237,6 +1358,35 @@ TEST(TypeManager, CircularPointerToStruct) {
   TypeManager manager(nullptr, context.get());
   uint32_t id = manager.FindPointerToType(600, spv::StorageClass::Function);
   EXPECT_EQ(id, 1201);
+}
+
+TEST(TypeManager, AttachLinkageDecoration) {
+  const std::string text = R"(
+      OpCapability Shader
+      OpCapability Linkage
+      OpMemoryModel Logical GLSL450
+      OpDecorate %1000 LinkageAttributes "_1000" Export
+       %800 = OpTypeInt 32 0
+      %1000 = OpTypeStruct %800
+      %1200 = OpTypeStruct %800
+  )";
+
+  std::unique_ptr<IRContext> context =
+      BuildModule(SPV_ENV_UNIVERSAL_1_5, nullptr, text,
+                  SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+  TypeManager manager(nullptr, context.get());
+
+  constexpr uint32_t source_id = 1000u;
+  constexpr uint32_t target_id = 1200u;
+  std::vector<Instruction*> decorations =
+      context->get_decoration_mgr()->GetDecorationsFor(source_id, true);
+  Type* type = context->get_type_mgr()->GetType(target_id);
+  for (auto dec : decorations) {
+    manager.AttachDecoration(*dec, type);
+  }
+  EXPECT_FALSE(type->decoration_empty());
+  EXPECT_TRUE(
+      type->HasSameDecorations(context->get_type_mgr()->GetType(source_id)));
 }
 
 }  // namespace

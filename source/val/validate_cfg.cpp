@@ -15,6 +15,7 @@
 #include <cassert>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <string>
 #include <tuple>
@@ -345,9 +346,40 @@ spv_result_t ValidateLoopMerge(ValidationState_t& _, const Instruction* inst) {
   if ((loop_control >> spv::LoopControlShift::PartialCount) & 0x1) {
     ++operand;
   }
+  if ((loop_control >> spv::LoopControlShift::MultipleWaitQueuesQCOM) & 0x1) {
+    ++operand;
+  }
 
   // That the right number of operands is present is checked by the parser. The
   // above code tracks operands for expanded validation checking in the future.
+
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateLifetime(ValidationState_t& _, const Instruction* inst) {
+  const uint32_t pointer_id = _.GetOperandTypeId(inst, 0);
+  const Instruction* pointer_inst = _.FindDef(pointer_id);
+  if (pointer_inst->opcode() != spv::Op::OpTypePointer) {
+    return _.diag(SPV_ERROR_INVALID_DATA, inst)
+           << "Op" << spvOpcodeString(inst->opcode())
+           << " pointer operand type must be a OpTypePointer.";
+  } else if (pointer_inst->GetOperandAs<spv::StorageClass>(1) !=
+             spv::StorageClass::Function) {
+    return _.diag(SPV_ERROR_INVALID_DATA, inst)
+           << "Op" << spvOpcodeString(inst->opcode())
+           << " pointer operand must be in the Function storage class.";
+  }
+
+  const uint32_t size = inst->GetOperandAs<uint32_t>(1);
+  if (size != 0) {
+    if (!_.HasCapability(spv::Capability::Addresses)) {
+      return _.diag(SPV_ERROR_INVALID_DATA, inst)
+             << "Op" << spvOpcodeString(inst->opcode())
+             << " size is non-zero, but the Addresses Capability is not "
+                "declared.";
+    }
+    // TODO - "Size must be 0 if Pointer is a pointer to a non-void type"
+  }
 
   return SPV_SUCCESS;
 }
@@ -886,6 +918,28 @@ spv_result_t StructuredControlFlowChecks(
   return SPV_SUCCESS;
 }
 
+// From Vulkan Spec in vkspec.html#ray-tracing-shader-call
+static bool IsInvocationRepackInstruction(spv::Op opcode) {
+  switch (opcode) {
+    case spv::Op::OpTraceRayKHR:
+    case spv::Op::OpTraceRayMotionNV:
+    case spv::Op::OpReorderThreadWithHintNV:
+    case spv::Op::OpReorderThreadWithHitObjectNV:
+    case spv::Op::OpReorderThreadWithHintEXT:
+    case spv::Op::OpReorderThreadWithHitObjectEXT:
+    case spv::Op::OpHitObjectTraceRayEXT:
+    case spv::Op::OpHitObjectReorderExecuteShaderEXT:
+    case spv::Op::OpHitObjectTraceReorderExecuteEXT:
+    case spv::Op::OpHitObjectTraceRayMotionEXT:
+    case spv::Op::OpHitObjectTraceMotionReorderExecuteEXT:
+    case spv::Op::OpReportIntersectionKHR:
+    case spv::Op::OpExecuteCallableKHR:
+      return true;
+    default:
+      return false;
+  }
+}
+
 spv_result_t MaximalReconvergenceChecks(ValidationState_t& _) {
   // Find all the entry points with the MaximallyReconvergencesKHR execution
   // mode.
@@ -915,16 +969,29 @@ spv_result_t MaximalReconvergenceChecks(ValidationState_t& _) {
     }
   }
 
-  // Check for conditional branches with the same true and false targets.
+  // Need to search through functions in execution mode call tree
   for (const auto& inst : _.ordered_instructions()) {
+    if (!inst.function() || !maximal_funcs.count(inst.function()->id())) {
+      continue;
+    }
+
+    // Check for conditional branches with the same true and false targets.
     if (inst.opcode() == spv::Op::OpBranchConditional) {
       const auto true_id = inst.GetOperandAs<uint32_t>(1);
       const auto false_id = inst.GetOperandAs<uint32_t>(2);
-      if (true_id == false_id && maximal_funcs.count(inst.function()->id())) {
+      if (true_id == false_id) {
         return _.diag(SPV_ERROR_INVALID_ID, &inst)
                << "In entry points using the MaximallyReconvergesKHR execution "
                   "mode, True Label and False Label must be different labels";
       }
+    } else if (IsInvocationRepackInstruction(inst.opcode())) {
+      return _.diag(SPV_ERROR_INVALID_ID, &inst)
+             << _.VkErrorID(9565)
+             << "The MaximallyReconvergesKHR Execution "
+                "Mode must not be applied to an entry "
+                "point if an invocation repack "
+                "instruction (Op"
+             << spvOpcodeString(inst.opcode()) << ") is statically used";
     }
   }
 
@@ -1177,6 +1244,7 @@ spv_result_t CfgPass(ValidationState_t& _, const Instruction* inst) {
     case spv::Op::OpIgnoreIntersectionKHR:
     case spv::Op::OpTerminateRayKHR:
     case spv::Op::OpEmitMeshTasksEXT:
+    case spv::Op::OpAbortKHR:
       _.current_function().RegisterBlockEnd(std::vector<uint32_t>());
       // Ops with dedicated passes check for the Execution Model there
       if (opcode == spv::Op::OpKill) {
@@ -1267,6 +1335,10 @@ spv_result_t ControlFlowPass(ValidationState_t& _, const Instruction* inst) {
       break;
     case spv::Op::OpLoopMerge:
       if (auto error = ValidateLoopMerge(_, inst)) return error;
+      break;
+    case spv::Op::OpLifetimeStart:
+    case spv::Op::OpLifetimeStop:
+      if (auto error = ValidateLifetime(_, inst)) return error;
       break;
     default:
       break;

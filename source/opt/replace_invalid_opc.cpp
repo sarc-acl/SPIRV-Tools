@@ -17,6 +17,8 @@
 #include <bitset>
 #include <vector>
 
+#include "source/table2.h"
+
 namespace spvtools {
 namespace opt {
 
@@ -40,6 +42,9 @@ Pass::Status ReplaceInvalidOpcodePass::Process() {
 
   for (Function& func : *get_module()) {
     modified |= RewriteFunction(&func, execution_model);
+  }
+  if (context()->id_overflow()) {
+    return Status::Failure;
   }
   return (modified ? Status::SuccessWithChange : Status::SuccessWithoutChange);
 }
@@ -104,7 +109,7 @@ bool ReplaceInvalidOpcodePass::RewriteFunction(Function* function,
             uint32_t file_name_id = 0;
             if (last_line_dbg_inst->opcode() == spv::Op::OpLine) {
               file_name_id = last_line_dbg_inst->GetSingleWordInOperand(0);
-            } else {  // Shader100::DebugLine
+            } else {  // NSDI::DebugLine
               uint32_t debug_source_id =
                   last_line_dbg_inst->GetSingleWordInOperand(2);
               Instruction* debug_source_inst =
@@ -164,6 +169,9 @@ void ReplaceInvalidOpcodePass::ReplaceInstruction(Instruction* inst,
                                                   uint32_t column_number) {
   if (inst->result_id() != 0) {
     uint32_t const_id = GetSpecialConstant(inst->type_id());
+    if (const_id == 0) {
+      return;
+    }
     context()->KillNamesAndDecorates(inst);
     context()->ReplaceAllUsesWith(inst->result_id(), const_id);
   }
@@ -187,6 +195,9 @@ uint32_t ReplaceInvalidOpcodePass::GetSpecialConstant(uint32_t type_id) {
   if (type->opcode() == spv::Op::OpTypeVector) {
     uint32_t component_const =
         GetSpecialConstant(type->GetSingleWordInOperand(0));
+    if (component_const == 0) {
+      return 0;
+    }
     std::vector<uint32_t> ids;
     for (uint32_t i = 0; i < type->GetSingleWordInOperand(1); ++i) {
       ids.push_back(component_const);
@@ -202,15 +213,21 @@ uint32_t ReplaceInvalidOpcodePass::GetSpecialConstant(uint32_t type_id) {
     special_const =
         const_mgr->GetConstant(type_mgr->GetType(type_id), literal_words);
   }
-  assert(special_const != nullptr);
-  return const_mgr->GetDefiningInstruction(special_const)->result_id();
+  if (special_const == nullptr) {
+    return 0;
+  }
+  Instruction* const_inst = const_mgr->GetDefiningInstruction(special_const);
+  if (const_inst == nullptr) {
+    return 0;
+  }
+  return const_inst->result_id();
 }
 
 std::string ReplaceInvalidOpcodePass::BuildWarningMessage(spv::Op opcode) {
-  spv_opcode_desc opcode_info;
-  context()->grammar().lookupOpcode(opcode, &opcode_info);
+  const spvtools::InstructionDesc* opcode_desc = nullptr;
+  spvtools::LookupOpcode(opcode, &opcode_desc);
   std::string message = "Removing ";
-  message += opcode_info->name;
+  message += opcode_desc->name().data();
   message += " instruction because of incompatible execution model.";
   return message;
 }

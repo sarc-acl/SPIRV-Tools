@@ -1,9 +1,12 @@
 .clang_complete
 .ycm_extra_conf.py*
 *.pyc
+android_test/lib
+android_test/app
 compile_commands.json
 /build*/
 /buildtools/
+/testing/
 /external/abseil_cpp/
 /external/googletest
 /external/SPIRV-Headers
@@ -11,6 +14,7 @@ compile_commands.json
 /external/effcee
 /external/re2
 /external/protobuf
+/external/mimalloc
 /out
 /TAGS
 /third_party/llvm-build/
@@ -24,6 +28,14 @@ bazel-spirv-tools
 bazel-SPIRV-Tools
 bazel-testlogs
 MODULE.bazel.lock
+
+# These are generated when locally testing the GN kokoro scripts
+standalone.gclient
+standalone.gclient_entries
+.gclient_previous_custom_vars
+.gclient_previous_sync_commits
+.gcs_entries
+.cipd
 
 # Vim
 [._]*.s[a-w][a-z]

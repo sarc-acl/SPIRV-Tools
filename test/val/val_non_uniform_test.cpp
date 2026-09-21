@@ -232,14 +232,12 @@ TEST_P(GroupNonUniform, Spirv1p3) {
   CompileSuccessfully(GenerateShaderCode(sstr.str()), SPV_ENV_UNIVERSAL_1_3);
   spv_result_t result = ValidateInstructions(SPV_ENV_UNIVERSAL_1_3);
   if (error == "") {
-    if (execution_scope == spv::Scope::Subgroup ||
-        execution_scope == spv::Scope::Workgroup) {
+    if (execution_scope == spv::Scope::Subgroup) {
       EXPECT_EQ(SPV_SUCCESS, result);
     } else {
       EXPECT_EQ(SPV_ERROR_INVALID_DATA, result);
-      EXPECT_THAT(
-          getDiagnosticString(),
-          HasSubstr("Execution scope is limited to Subgroup or Workgroup"));
+      EXPECT_THAT(getDiagnosticString(),
+                  HasSubstr("Execution scope is limited to Subgroup"));
     }
   } else {
     EXPECT_EQ(SPV_ERROR_INVALID_DATA, result);
@@ -958,7 +956,7 @@ OpFunctionEnd
             ValidateInstructions(SPV_ENV_UNIVERSAL_1_4));
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr("Before SPIR-V 1.5, Id must be a constant instruction"));
+      HasSubstr("In SPIR-V 1.4 or earlier, Id must be a constant instruction"));
 }
 
 TEST_F(ValidateGroupNonUniform, BroadcastNonConstantSpv1p5) {
@@ -1028,7 +1026,8 @@ OpFunctionEnd
             ValidateInstructions(SPV_ENV_UNIVERSAL_1_4));
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr("Before SPIR-V 1.5, Index must be a constant instruction"));
+      HasSubstr(
+          "In SPIR-V 1.4 or earlier, Index must be a constant instruction"));
 }
 
 TEST_F(ValidateGroupNonUniform, QuadBroadcastNonConstantSpv1p5) {

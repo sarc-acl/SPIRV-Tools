@@ -144,6 +144,8 @@ spv_result_t InstructionPass(ValidationState_t& _, const Instruction* inst);
 /// has been propagated down to the group members.
 spv_result_t ValidateDecorations(ValidationState_t& _);
 
+spv_result_t ValidateExplicitLayout(ValidationState_t& _);
+
 /// Performs validation of built-in variables.
 spv_result_t ValidateBuiltIns(ValidationState_t& _);
 
@@ -180,6 +182,12 @@ spv_result_t AtomicsPass(ValidationState_t& _, const Instruction* inst);
 /// Validates correctness of barrier instructions.
 spv_result_t BarriersPass(ValidationState_t& _, const Instruction* inst);
 
+/// Validates correctness of DotProduct instructions.
+spv_result_t DotProductPass(ValidationState_t& _, const Instruction* inst);
+
+/// Validates correctness of Group (Kernel) instructions.
+spv_result_t GroupPass(ValidationState_t& _, const Instruction* inst);
+
 /// Validates correctness of literal numbers.
 spv_result_t LiteralsPass(ValidationState_t& _, const Instruction* inst);
 
@@ -189,14 +197,17 @@ spv_result_t ExtensionPass(ValidationState_t& _, const Instruction* inst);
 /// Validates correctness of annotation instructions.
 spv_result_t AnnotationPass(ValidationState_t& _, const Instruction* inst);
 
+/// Validates correctness of pipe instructions.
+spv_result_t PipePass(ValidationState_t& _, const Instruction* inst);
+
 /// Validates correctness of non-uniform group instructions.
 spv_result_t NonUniformPass(ValidationState_t& _, const Instruction* inst);
 
 /// Validates correctness of debug instructions.
 spv_result_t DebugPass(ValidationState_t& _, const Instruction* inst);
 
-// Validates that capability declarations use operands allowed in the current
-// context.
+/// Validates that capability declarations use operands allowed in the current
+/// context.
 spv_result_t CapabilityPass(ValidationState_t& _, const Instruction* inst);
 
 /// Validates correctness of primitive instructions.
@@ -220,8 +231,20 @@ spv_result_t RayTracingPass(ValidationState_t& _, const Instruction* inst);
 /// Validates correctness of shader execution reorder instructions.
 spv_result_t RayReorderNVPass(ValidationState_t& _, const Instruction* inst);
 
+/// Validates correctness of shader execution reorder EXT instructions.
+spv_result_t RayReorderEXTPass(ValidationState_t& _, const Instruction* inst);
+
 /// Validates correctness of mesh shading instructions.
 spv_result_t MeshShadingPass(ValidationState_t& _, const Instruction* inst);
+
+/// Validates correctness of tensor instructions.
+spv_result_t TensorPass(ValidationState_t& _, const Instruction* inst);
+
+/// Validates correctness of graph instructions.
+spv_result_t GraphPass(ValidationState_t& _, const Instruction* inst);
+
+/// Validates correctness of certain special type instructions.
+spv_result_t InvalidTypePass(ValidationState_t& _, const Instruction* inst);
 
 /// Calculates the reachability of basic blocks.
 void ReachabilityPass(ValidationState_t& _);
@@ -249,6 +272,9 @@ spv_result_t ValidateSmallTypeUses(ValidationState_t& _,
 /// functions and not used in any other image functions.
 spv_result_t ValidateQCOMImageProcessingTextureUsages(ValidationState_t& _,
                                                       const Instruction* inst);
+
+/// Validates logical pointer restrictions.
+spv_result_t ValidateLogicalPointers(ValidationState_t& _);
 
 /// @brief Validate the ID's within a SPIR-V binary
 ///
